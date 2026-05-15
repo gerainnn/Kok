@@ -1,0 +1,488 @@
+"""
+GameBuddy — Telegram-бот, с которым можно скоротать время.
+Игры: крестики-нолики (с непобедимым ИИ), КНБ, угадай число, виселица,
+викторина, кубик/монетка + Web App «Поймай звезду».
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import random
+from pathlib import Path
+from typing import Any
+
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
+from aiohttp import web
+
+from games import hangman, quiz, tictactoe
+
+# ---------- конфиг ----------
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8836940145:AAH_KRNe1Umuzuqf11prikrgcx7-VKIYtHE")
+WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # подставится во время запуска
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+log = logging.getLogger("gamebuddy")
+
+router = Router()
+
+
+# ---------- FSM ----------
+class GameStates(StatesGroup):
+    guess_number = State()
+    hangman = State()
+
+
+# ---------- клавиатуры ----------
+def main_menu(public_url: str | None) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(text="🎮 Игры"), KeyboardButton(text="🎲 Случайное")],
+        [KeyboardButton(text="❓ Викторина"), KeyboardButton(text="ℹ️ О боте")],
+    ]
+    if public_url:
+        rows.insert(
+            0,
+            [KeyboardButton(text="⭐ Поймай звезду", web_app=WebAppInfo(url=public_url))],
+        )
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def games_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌⭕ Крестики-нолики", callback_data="game:ttt")],
+            [InlineKeyboardButton(text="✊✋✌️ Камень-ножницы-бумага", callback_data="game:rps")],
+            [InlineKeyboardButton(text="🔢 Угадай число", callback_data="game:guess")],
+            [InlineKeyboardButton(text="🪢 Виселица", callback_data="game:hangman")],
+            [InlineKeyboardButton(text="❓ Викторина", callback_data="game:quiz")],
+            [InlineKeyboardButton(text="🎲 Кубик / 🪙 Монетка", callback_data="game:dice")],
+        ]
+    )
+
+
+def rps_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="✊ Камень", callback_data="rps:rock"),
+            InlineKeyboardButton(text="✋ Бумага", callback_data="rps:paper"),
+            InlineKeyboardButton(text="✌️ Ножницы", callback_data="rps:scissors"),
+        ]]
+    )
+
+
+def ttt_keyboard(board: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for r in range(3):
+        row: list[InlineKeyboardButton] = []
+        for c in range(3):
+            i = r * 3 + c
+            cell = board[i]
+            text = cell if cell != " " else "·"
+            row.append(InlineKeyboardButton(text=text, callback_data=f"ttt:{i}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔄 Новая игра", callback_data="ttt:new")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def quiz_keyboard(options: list[str]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=opt, callback_data=f"quiz:{i}")]
+            for i, opt in enumerate(options)
+        ] + [[InlineKeyboardButton(text="➡️ Следующий вопрос", callback_data="quiz:next")]]
+    )
+
+
+def dice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🎲 Кубик", callback_data="rng:dice"),
+            InlineKeyboardButton(text="🪙 Монетка", callback_data="rng:coin"),
+            InlineKeyboardButton(text="🎯 Дартс", callback_data="rng:darts"),
+        ]]
+    )
+
+
+# ---------- /start, меню ----------
+@router.message(CommandStart())
+async def start_cmd(msg: Message, state: FSMContext) -> None:
+    await state.clear()
+    await msg.answer(
+        f"<b>Привет, {msg.from_user.first_name}!</b> 👋\n\n"
+        "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n"
+        "Сыграем? Нажми «🎮 Игры» или открой <b>⭐ Поймай звезду</b> "
+        "(встроенный Web App с физикой и таймером).\n\n"
+        "Команды: /games /quiz /dice /help",
+        reply_markup=main_menu(PUBLIC_URL),
+    )
+
+
+@router.message(Command("help"))
+@router.message(F.text == "ℹ️ О боте")
+async def help_cmd(msg: Message) -> None:
+    await msg.answer(
+        "<b>Что умею:</b>\n"
+        "• ❌⭕ Крестики-нолики — играю минимаксом, проиграть мне нельзя 😏\n"
+        "• ✊✋✌️ Камень-ножницы-бумага — счёт ведётся\n"
+        "• 🔢 Угадай число — 1..100, подсказываю «больше/меньше»\n"
+        "• 🪢 Виселица — слова на русском\n"
+        "• ❓ Викторина — общие знания\n"
+        "• 🎲 Кубик / монетка / дартс\n"
+        "• ⭐ Web App «Поймай звезду» — мини-игра прямо в Telegram\n\n"
+        "Команды: /start /games /quiz /dice /help"
+    )
+
+
+@router.message(Command("games"))
+@router.message(F.text == "🎮 Игры")
+async def games_cmd(msg: Message) -> None:
+    await msg.answer("Выбирай игру:", reply_markup=games_menu())
+
+
+@router.callback_query(F.data.startswith("game:"))
+async def game_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    kind = cb.data.split(":", 1)[1]
+    if kind == "ttt":
+        await start_ttt(cb)
+    elif kind == "rps":
+        await cb.message.answer("Выбирай:", reply_markup=rps_keyboard())
+    elif kind == "guess":
+        await start_guess(cb, state)
+    elif kind == "hangman":
+        await start_hangman(cb, state)
+    elif kind == "quiz":
+        await ask_quiz(cb.message)
+    elif kind == "dice":
+        await cb.message.answer("Что бросаем?", reply_markup=dice_keyboard())
+    await cb.answer()
+
+
+# ---------- крестики-нолики ----------
+TTT_BOARDS: dict[int, list[str]] = {}
+
+
+async def start_ttt(cb: CallbackQuery) -> None:
+    board = tictactoe.new_board()
+    TTT_BOARDS[cb.from_user.id] = board
+    await cb.message.answer(
+        "❌⭕ <b>Крестики-нолики</b>\nТы — X, я — O. Нажимай на клетку.",
+        reply_markup=ttt_keyboard(board),
+    )
+
+
+@router.callback_query(F.data.startswith("ttt:"))
+async def ttt_step(cb: CallbackQuery) -> None:
+    payload = cb.data.split(":", 1)[1]
+    uid = cb.from_user.id
+
+    if payload == "new":
+        TTT_BOARDS[uid] = tictactoe.new_board()
+        await cb.message.edit_text(
+            "❌⭕ Новая игра. Ходи!",
+            reply_markup=ttt_keyboard(TTT_BOARDS[uid]),
+        )
+        await cb.answer()
+        return
+
+    board = TTT_BOARDS.get(uid)
+    if board is None:
+        board = tictactoe.new_board()
+        TTT_BOARDS[uid] = board
+
+    idx = int(payload)
+    if board[idx] != " ":
+        await cb.answer("Занято!", show_alert=False)
+        return
+
+    board[idx] = tictactoe.PLAYER
+    w = tictactoe.winner(board)
+    if w is None:
+        bm = tictactoe.bot_move(board)
+        if bm >= 0:
+            board[bm] = tictactoe.BOT
+            w = tictactoe.winner(board)
+
+    if w == tictactoe.PLAYER:
+        text = "❌⭕ Невероятно — ты выиграл! 🏆"
+    elif w == tictactoe.BOT:
+        text = "❌⭕ Я победил 😎"
+    elif w == "draw":
+        text = "❌⭕ Ничья 🤝"
+    else:
+        text = "❌⭕ Твой ход:"
+
+    await cb.message.edit_text(text, reply_markup=ttt_keyboard(board))
+    await cb.answer()
+
+
+# ---------- камень-ножницы-бумага ----------
+RPS_SCORE: dict[int, dict[str, int]] = {}
+RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+RPS_EMOJI = {"rock": "✊", "paper": "✋", "scissors": "✌️"}
+RPS_NAME = {"rock": "Камень", "paper": "Бумага", "scissors": "Ножницы"}
+
+
+@router.callback_query(F.data.startswith("rps:"))
+async def rps_step(cb: CallbackQuery) -> None:
+    user = cb.data.split(":", 1)[1]
+    bot_choice = random.choice(list(RPS_BEATS))
+    score = RPS_SCORE.setdefault(cb.from_user.id, {"w": 0, "l": 0, "d": 0})
+
+    if user == bot_choice:
+        verdict, key = "Ничья 🤝", "d"
+    elif RPS_BEATS[user] == bot_choice:
+        verdict, key = "Ты выиграл! 🎉", "w"
+    else:
+        verdict, key = "Я выиграл 😎", "l"
+    score[key] += 1
+
+    text = (
+        f"Ты: {RPS_EMOJI[user]} {RPS_NAME[user]}\n"
+        f"Я:  {RPS_EMOJI[bot_choice]} {RPS_NAME[bot_choice]}\n\n"
+        f"<b>{verdict}</b>\n\n"
+        f"Счёт — победы: {score['w']} | поражения: {score['l']} | ничьи: {score['d']}"
+    )
+    await cb.message.answer(text, reply_markup=rps_keyboard())
+    await cb.answer()
+
+
+# ---------- угадай число ----------
+async def start_guess(cb: CallbackQuery, state: FSMContext) -> None:
+    n = random.randint(1, 100)
+    await state.set_state(GameStates.guess_number)
+    await state.update_data(n=n, tries=0)
+    await cb.message.answer(
+        "🔢 <b>Угадай число от 1 до 100</b>\nПросто пиши числа в чат."
+    )
+
+
+@router.message(GameStates.guess_number, F.text.regexp(r"^-?\d+$"))
+async def guess_step(msg: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    n: int = data["n"]
+    tries: int = data["tries"] + 1
+    guess = int(msg.text)
+
+    if guess == n:
+        await state.clear()
+        await msg.answer(f"🎯 Точно! Это <b>{n}</b>. Угадал за {tries} попыт(ок). Ещё разок? /games")
+    elif guess < n:
+        await state.update_data(tries=tries)
+        await msg.answer("📈 Больше")
+    else:
+        await state.update_data(tries=tries)
+        await msg.answer("📉 Меньше")
+
+
+# ---------- виселица ----------
+async def start_hangman(cb: CallbackQuery, state: FSMContext) -> None:
+    word = hangman.random_word()
+    await state.set_state(GameStates.hangman)
+    await state.update_data(word=word, opened=set(), mistakes=0)
+    await cb.message.answer(
+        "🪢 <b>Виселица</b>\nЯ загадал слово на русском. Присылай по одной букве.\n\n"
+        f"<code>{hangman.STAGES[0]}</code>\n"
+        f"Слово: <code>{hangman.render_word(word, set())}</code>"
+    )
+
+
+@router.message(GameStates.hangman)
+async def hangman_step(msg: Message, state: FSMContext) -> None:
+    text = (msg.text or "").strip().lower()
+    if len(text) != 1 or not text.isalpha():
+        await msg.answer("Пришли ровно одну букву.")
+        return
+
+    data = await state.get_data()
+    word: str = data["word"]
+    opened: set = set(data["opened"])
+    mistakes: int = data["mistakes"]
+
+    if text in opened:
+        await msg.answer("Эту букву уже называл.")
+        return
+
+    opened.add(text)
+    if text not in word:
+        mistakes += 1
+
+    if all(ch in opened for ch in word):
+        await state.clear()
+        await msg.answer(f"🏆 Победа! Слово было: <b>{word.upper()}</b>")
+        return
+
+    if mistakes >= hangman.MAX_MISTAKES:
+        await state.clear()
+        await msg.answer(
+            f"<code>{hangman.STAGES[-1]}</code>\n"
+            f"💀 Проиграл. Слово было: <b>{word.upper()}</b>"
+        )
+        return
+
+    await state.update_data(opened=opened, mistakes=mistakes)
+    await msg.answer(
+        f"<code>{hangman.STAGES[mistakes]}</code>\n"
+        f"Слово: <code>{hangman.render_word(word, opened)}</code>\n"
+        f"Ошибок: {mistakes}/{hangman.MAX_MISTAKES}"
+    )
+
+
+# ---------- викторина ----------
+QUIZ_CURRENT: dict[int, dict[str, Any]] = {}
+
+
+async def ask_quiz(message: Message) -> None:
+    q = quiz.random_question()
+    QUIZ_CURRENT[message.chat.id] = q
+    await message.answer(
+        f"❓ <b>{q['q']}</b>",
+        reply_markup=quiz_keyboard(q["options"]),
+    )
+
+
+@router.message(Command("quiz"))
+@router.message(F.text == "❓ Викторина")
+async def quiz_cmd(msg: Message) -> None:
+    await ask_quiz(msg)
+
+
+@router.callback_query(F.data.startswith("quiz:"))
+async def quiz_answer(cb: CallbackQuery) -> None:
+    payload = cb.data.split(":", 1)[1]
+    if payload == "next":
+        await ask_quiz(cb.message)
+        await cb.answer()
+        return
+
+    q = QUIZ_CURRENT.get(cb.message.chat.id)
+    if not q:
+        await cb.answer("Вопрос устарел, жми «следующий».", show_alert=False)
+        return
+
+    pick = int(payload)
+    correct = q["answer"]
+    if pick == correct:
+        await cb.answer("✅ Верно!", show_alert=False)
+        await cb.message.edit_text(
+            f"❓ {q['q']}\n\n✅ <b>{q['options'][correct]}</b> — правильно!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next")
+            ]]),
+        )
+    else:
+        await cb.answer("❌ Мимо", show_alert=False)
+        await cb.message.edit_text(
+            f"❓ {q['q']}\n\n"
+            f"❌ Ты выбрал: <b>{q['options'][pick]}</b>\n"
+            f"✅ Правильно: <b>{q['options'][correct]}</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next")
+            ]]),
+        )
+
+
+# ---------- кубик / монетка / дартс ----------
+@router.message(Command("dice"))
+@router.message(F.text == "🎲 Случайное")
+async def dice_cmd(msg: Message) -> None:
+    await msg.answer("Что бросаем?", reply_markup=dice_keyboard())
+
+
+@router.callback_query(F.data.startswith("rng:"))
+async def rng_step(cb: CallbackQuery) -> None:
+    kind = cb.data.split(":", 1)[1]
+    if kind == "dice":
+        await cb.message.answer_dice(emoji="🎲")
+    elif kind == "coin":
+        result = random.choice(["Орёл 🦅", "Решка 🪙"])
+        await cb.message.answer(f"Бросаю монетку... <b>{result}</b>")
+    elif kind == "darts":
+        await cb.message.answer_dice(emoji="🎯")
+    await cb.answer()
+
+
+# ---------- web app data ----------
+@router.message(F.web_app_data)
+async def webapp_data(msg: Message) -> None:
+    try:
+        data = json.loads(msg.web_app_data.data)
+    except Exception:
+        data = {"raw": msg.web_app_data.data}
+    if data.get("game") == "catch_star":
+        score = data.get("score", 0)
+        comment = (
+            "🌟 Космический ас!" if score >= 30
+            else "💫 Хороший улов!" if score >= 15
+            else "✨ Тренируйся, всё впереди!"
+        )
+        await msg.answer(f"⭐ Твой результат: <b>{score}</b>\n{comment}")
+    else:
+        await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
+
+
+# ---------- aiohttp: отдаём webapp ----------
+WEBAPP_DIR = Path(__file__).parent / "webapp"
+
+
+async def serve_index(_request: web.Request) -> web.Response:
+    return web.FileResponse(WEBAPP_DIR / "index.html")
+
+
+async def health(_request: web.Request) -> web.Response:
+    return web.json_response({"ok": True, "service": "gamebuddy"})
+
+
+def build_web_app() -> web.Application:
+    app = web.Application()
+    app.router.add_get("/", serve_index)
+    app.router.add_get("/health", health)
+    app.router.add_static("/static/", WEBAPP_DIR, show_index=False)
+    return app
+
+
+# ---------- main ----------
+async def main() -> None:
+    bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(router)
+
+    web_app = build_web_app()
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
+    await site.start()
+    log.info("Web server started on :%s", WEB_PORT)
+
+    me = await bot.get_me()
+    log.info("Bot started: @%s (id=%s). PUBLIC_URL=%s", me.username, me.id, PUBLIC_URL or "—")
+
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        await runner.cleanup()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
