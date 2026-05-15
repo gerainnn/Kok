@@ -56,11 +56,14 @@ async def _auth(request: web.Request) -> Optional[dict]:
     bot_token = request.app["bot_token"]
     init_data = await _read_init_data(request)
     user_tg: Optional[dict] = None
+    fail_reason = "no_init_data"
 
     if init_data:
         parsed = parse_init_data(init_data, bot_token)
         if parsed and parsed.get("user"):
             user_tg = parsed["user"]
+        else:
+            fail_reason = "bad_signature_or_user"
 
     # Фолбек для форк-клиентов: подписи нет/битая, но фронт прислал user из
     # initDataUnsafe в заголовке X-TG-User. Включается переменной окружения.
@@ -72,8 +75,17 @@ async def _auth(request: web.Request) -> Optional[dict]:
                 "auth: unsigned fallback used for user_id=%s (%s)",
                 user_tg.get("id"), user_tg.get("username") or user_tg.get("first_name"),
             )
+        else:
+            fail_reason = "unsigned_user_invalid"
 
     if user_tg is None:
+        # Один лог на каждый 401 — это поможет понять, что ломается у юзера.
+        log.warning(
+            "auth: 401 path=%s reason=%s has_init=%s has_xtguser=%s allow_unsigned=%s",
+            request.rel_url, fail_reason,
+            bool(init_data), bool(request.headers.get("X-TG-User")),
+            ALLOW_UNSIGNED,
+        )
         return None
 
     user_db = await db.upsert_user(
