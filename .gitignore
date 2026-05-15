@@ -8,3 +8,5 @@ env/
 *.log
 bot.log
 .DS_Store
+.idea/
+.vscode/
