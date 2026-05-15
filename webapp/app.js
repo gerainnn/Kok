@@ -131,11 +131,37 @@ function showBigWin(amount, gameTitle, opts = {}) {
   haptic("win");
   confettiBurst(80);
 }
+// Все изменения баланса идут через сервер (если мы внутри Telegram).
+// Локально (вне TG) — фолбек в localStorage.
+const API = window.GameBuddyAPI;
+const SERVER = !!(API && API.isTelegram);
+
+let _serverSyncQueue = Promise.resolve();
+function _enqueue(fn) { _serverSyncQueue = _serverSyncQueue.then(fn).catch(()=>{}); return _serverSyncQueue; }
+
 function adjustBalance(delta) {
+  // оптимистично обновляем локально, чтобы UI был отзывчив
   state.balance = Math.max(0, state.balance + delta);
   refreshBalance();
   save();
+  // на сервере синхронизация делается через recordResult/case_open/daily/shop_buy.
+  // Прямые adjustBalance вне ставок (например, продажа предмета, контракт) — синхронизируем через /api/bet с wager=|delta| если delta<0, или через win=delta если delta>0.
+  if (!SERVER) return;
+  if (delta === 0) return;
+  _enqueue(async () => {
+    try {
+      const body = delta >= 0
+        ? { game: "manual", wager: 0, win: delta }
+        : { game: "manual", wager: -delta, win: 0 };
+      const r = await API.bet(body);
+      if (r.ok && typeof r.data?.balance === "number") {
+        state.balance = r.data.balance;
+        refreshBalance();
+      }
+    } catch (e) { /* ignore */ }
+  });
 }
+
 function tryWager(amount, max) {
   amount = Math.floor(amount);
   if (!Number.isFinite(amount) || amount <= 0) { toast("Некорректная ставка", "lose"); return 0; }
@@ -143,12 +169,25 @@ function tryWager(amount, max) {
   if (amount > state.balance) { toast("Недостаточно средств", "lose"); return 0; }
   return amount;
 }
+
 function recordResult(game, wager, win) {
   state.stats.spins++;
   state.stats.totalWagered += wager;
   state.stats.totalWon += win;
   if (win > 0) state.stats.wins++; else state.stats.losses++;
   if (win > state.stats.biggestWin) state.stats.biggestWin = win;
+  // Синхронизация с сервером — авторитетный баланс возьмём оттуда
+  if (SERVER) {
+    _enqueue(async () => {
+      try {
+        const r = await API.bet({ game, wager, win });
+        if (r.ok && typeof r.data?.balance === "number") {
+          state.balance = r.data.balance;
+          refreshBalance();
+        }
+      } catch (e) { /* ignore */ }
+    });
+  }
   if (win >= state.bigWinThreshold) {
     const titles = { slots: "🎰 Слоты", roulette: "🎯 Рулетка", crash: "🚀 Crash",
       mines: "💣 Mines", wheel: "🎡 Колесо", coinflip: "🪙 Coinflip" };
@@ -166,7 +205,19 @@ $$(".nav-item").forEach(btn => {
     haptic("light");
     if (target === "profile") renderProfile();
     if (target === "cases") renderCases();
+    if (target === "home") renderHome();
+    if (target === "shop") renderShop();
+    if (target === "leaderboard") renderLeaderboard();
   });
+});
+
+// клик по карточке "Быстрого старта" с data-go
+document.addEventListener("click", (e) => {
+  const card = e.target.closest("[data-go]");
+  if (!card) return;
+  const target = card.dataset.go;
+  const navBtn = $(`.nav-item[data-nav="${target}"]`);
+  if (navBtn) navBtn.click();
 });
 
 // ---------- screens ----------
@@ -194,84 +245,17 @@ document.addEventListener("click", (e) => {
   haptic("light");
 });
 
-// ---------- TAP / CLICKER (без изменений) ----------
-const tapCoin = $("#tapCoin");
-const tapPerClickEl = $("#tapPerClick");
-const tapCountEl = $("#tapCount");
-const tapEarnedEl = $("#tapEarned");
-
-const UPGRADES = [
-  { id: "tap", name: "Сильный палец", desc: "+1 к доходу за тап", baseCost: 100,
-    apply: () => { state.perTap = 1 + state.upgrades.tap; } },
-  { id: "lucky", name: "Удача", desc: "5% шанс x10 при тапе", baseCost: 500,
-    apply: () => {} },
-  { id: "vault", name: "Сейф", desc: "+5% к выигрышам в играх", baseCost: 1000,
-    apply: () => {} },
-];
-function upgradeCost(u) { return Math.floor(u.baseCost * Math.pow(1.6, state.upgrades[u.id])); }
-function applyAllUpgrades() { UPGRADES.forEach(u => u.apply()); }
-
-function renderUpgrades() {
-  const list = $("#upgradeList");
-  list.innerHTML = "";
-  for (const u of UPGRADES) {
-    const lvl = state.upgrades[u.id];
-    const cost = upgradeCost(u);
-    const row = document.createElement("div");
-    row.className = "upgrade";
-    row.innerHTML = `
-      <div class="upgrade-info">
-        <div class="upgrade-name">${u.name} <span style="color:var(--text-dim); font-weight:600;">Lv.${lvl}</span></div>
-        <div class="upgrade-desc">${u.desc}</div>
-      </div>
-      <button class="upgrade-buy">${fmt(cost)} 🪙</button>
-    `;
-    const btn = row.querySelector(".upgrade-buy");
-    btn.disabled = state.balance < cost;
-    btn.addEventListener("click", () => {
-      if (state.balance < cost) { toast("Не хватает", "lose"); return; }
-      adjustBalance(-cost);
-      state.upgrades[u.id]++;
-      applyAllUpgrades();
-      tapPerClickEl.textContent = "+" + state.perTap + " за тап";
-      renderUpgrades();
-      haptic("medium");
-      toast("Прокачано!", "win");
-    });
-    list.appendChild(row);
-  }
-}
-
-function tapHandler(e) {
-  let earn = state.perTap;
-  let lucky = false;
-  if (state.upgrades.lucky > 0 && Math.random() < 0.05 * state.upgrades.lucky) {
-    earn *= 10;
-    lucky = true;
-  }
-  state.balance += earn;
-  state.taps++;
-  state.earnedFromTaps += earn;
-  refreshBalance();
-  tapCountEl.textContent = fmt(state.taps);
-  tapEarnedEl.textContent = fmt(state.earnedFromTaps);
-  tapCoin.classList.remove("pulse"); void tapCoin.offsetWidth; tapCoin.classList.add("pulse");
-  haptic(lucky ? "heavy" : "light");
-
-  const rect = tapCoin.getBoundingClientRect();
-  const x = (e.touches?.[0]?.clientX ?? e.clientX ?? rect.left + rect.width / 2);
-  const y = (e.touches?.[0]?.clientY ?? e.clientY ?? rect.top + rect.height / 2);
-  const float = document.createElement("div");
-  float.className = "coin-float";
-  float.textContent = (lucky ? "🍀 +" : "+") + earn;
-  float.style.left = x + "px";
-  float.style.top = (y - 20) + "px";
-  document.body.appendChild(float);
-  setTimeout(() => float.remove(), 1100);
-
-  if (state.taps % 10 === 0) save();
-}
-tapCoin.addEventListener("pointerdown", tapHandler);
+// ---------- LEGACY UPGRADES (кликер удалён, оставлены заглушки) ----------
+// state.upgrades.vault уже не покупается, но проверки по нему остались в раундах казино.
+// Все эти переменные теперь noop, ничего не ломают.
+const tapCoin = null;
+const tapPerClickEl = { textContent: "" };
+const tapCountEl = { textContent: "" };
+const tapEarnedEl = { textContent: "" };
+const UPGRADES = [];
+function upgradeCost() { return 0; }
+function applyAllUpgrades() {}
+function renderUpgrades() {}
 
 // ---------- DAILY BONUS ----------
 const dailyBtn = $("#dailyBtn");
@@ -289,9 +273,35 @@ function refreshDaily() {
     dailyBtn.textContent = `⏳ ${h}ч ${m}м`;
   }
 }
-dailyBtn.addEventListener("click", () => {
+dailyBtn.addEventListener("click", async () => {
   const ms = 22 * 60 * 60 * 1000;
   if (Date.now() - state.lastDaily < ms) return;
+
+  if (SERVER) {
+    const r = await API.daily();
+    if (!r.ok) {
+      if (r.error === "cooldown") {
+        toast("Бонус будет позже", "info");
+      } else {
+        toast("Ошибка: " + (r.error || "?"), "lose");
+      }
+      // синхронизируем баланс на всякий
+      try { const me = await API.me(); if (me.ok) { state.balance = me.data.user.balance; refreshBalance(); } } catch(e){}
+      refreshDaily();
+      return;
+    }
+    state.balance = r.data.balance;
+    state.lastDaily = Date.now();
+    save();
+    refreshBalance();
+    refreshDaily();
+    confettiBurst(40);
+    toast("Бонус +" + fmt(r.data.granted || 500), "win");
+    haptic("win");
+    return;
+  }
+
+  // demo (без сервера)
   const reward = 500;
   adjustBalance(reward);
   state.lastDaily = Date.now();
@@ -1331,26 +1341,26 @@ function renderProfile() {
     <div class="stat-tile"><div class="label">Самый большой выигрыш</div><div class="value" style="color:var(--gold);">${fmt(s.biggestWin)}</div></div>
     <div class="stat-tile"><div class="label">Кейсов открыто</div><div class="value">${fmt(s.casesOpened)}</div></div>
     <div class="stat-tile"><div class="label">Контрактов</div><div class="value">${fmt(s.contractsRun || 0)}</div></div>
-    <div class="stat-tile"><div class="label">Тапов</div><div class="value">${fmt(state.taps)}</div></div>
+    <div class="stat-tile"><div class="label">Серия викторины</div><div class="value">${fmt(window._streakBest || 0)}</div></div>
     <div class="stat-tile"><div class="label">Всего поставлено</div><div class="value">${fmt(s.totalWagered)}</div></div>
     <div class="stat-tile"><div class="label">Всего выиграно</div><div class="value" style="color:var(--green);">${fmt(s.totalWon)}</div></div>
   `;
 }
 
 $("#resetBtn").addEventListener("click", () => {
-  if (!confirm("Точно сбросить весь прогресс?")) return;
-  state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+  if (!confirm("Сбросить локальный прогресс аркады (рекорды 2048, змейки, рогалика)? Баланс и кейсы НЕ сбрасываются.")) return;
+  state.arcade = {
+    soulShards: 0,
+    metaUpgrades: { hp: 0, atk: 0, spd: 0, regen: 0, magnet: 0, luck: 0, skill: 0 },
+    rogueBest: { depth: 0, kills: 0, time: 0 },
+    best2048: 0,
+    bestSnake: 0,
+    snakeBest: {},
+  };
   save();
-  applyAllUpgrades();
   refreshBalance();
-  renderUpgrades();
-  refreshDaily();
   renderProfile();
-  renderCases();
-  tapPerClickEl.textContent = "+" + state.perTap + " за тап";
-  tapCountEl.textContent = "0";
-  tapEarnedEl.textContent = "0";
-  toast("Прогресс сброшен", "info");
+  toast("Локальный прогресс аркады сброшен", "info");
 });
 
 // ---------- INIT ----------
@@ -1359,9 +1369,6 @@ refreshBalance();
 renderUpgrades();
 renderCases();
 refreshDaily();
-tapPerClickEl.textContent = "+" + state.perTap + " за тап";
-tapCountEl.textContent = fmt(state.taps);
-tapEarnedEl.textContent = fmt(state.earnedFromTaps);
 renderCrashHistory();
 
 // ============================================================
@@ -3417,5 +3424,208 @@ $$(".nav-item").forEach(btn => {
 });
 // первый рендер
 renderArcadeRecords();
+
+// ============================================================
+// 🌐 Серверная синхронизация: профиль, баланс, кейсы (через API.bet/case_open)
+// ============================================================
+async function syncFromServer() {
+  if (!SERVER) return;
+  try {
+    const r = await API.me();
+    if (r.ok) {
+      const u = r.data.user;
+      state.balance = u.balance;
+      window._serverUser = u;
+      window._streakBest = u.stats?.streak_best || 0;
+      // мерджим в локальные stats для отображения
+      state.stats.spins        = u.stats?.spins        ?? state.stats.spins;
+      state.stats.totalWagered = u.stats?.total_wagered?? state.stats.totalWagered;
+      state.stats.totalWon     = u.stats?.total_won    ?? state.stats.totalWon;
+      state.stats.biggestWin   = u.stats?.biggest_win  ?? state.stats.biggestWin;
+      state.stats.wins         = u.stats?.wins         ?? state.stats.wins;
+      state.stats.losses       = u.stats?.losses       ?? state.stats.losses;
+      refreshBalance();
+      renderHome();
+      save();
+    }
+  } catch (e) {}
+}
+
+// ============================================================
+// 🏠 ГЛАВНАЯ
+// ============================================================
+function renderHome() {
+  const u = window._serverUser;
+  const tgUser = tg?.initDataUnsafe?.user;
+  const name = u?.first_name || tgUser?.first_name || tgUser?.username || "Игрок";
+  $("#homeName").textContent = name;
+  $("#homeAvatar").textContent = (name?.[0] || "🎮").toUpperCase();
+  $("#homeBalance").textContent = fmt(state.balance);
+  $("#homeSpins").textContent = fmt(state.stats.spins);
+  $("#homeStreak").textContent = fmt(window._streakBest || 0);
+  $("#homeBigWin").textContent = fmt(state.stats.biggestWin);
+  const greetings = ["С возвращением!", "Удачи сегодня!", "Здарова, чемпион!", "Пора играть.", "Соскучился."];
+  $("#homeHello").textContent = greetings[Math.floor(Math.random() * greetings.length)];
+}
+
+// ============================================================
+// 🛍 МАГАЗИН ПОДАРКОВ
+// ============================================================
+let _shopCatalog = null;
+let _pendingGift = null;
+
+async function renderShop() {
+  const grid = $("#shopGrid");
+  if (!SERVER) {
+    grid.innerHTML = `<div class="shop-loading">Магазин доступен только внутри Telegram.</div>`;
+    return;
+  }
+  if (!_shopCatalog) {
+    grid.innerHTML = `<div class="shop-loading">Загружаю каталог...</div>`;
+    const r = await API.shopList();
+    if (!r.ok) { grid.innerHTML = `<div class="shop-loading">Ошибка загрузки</div>`; return; }
+    _shopCatalog = r.data.items;
+  }
+  grid.innerHTML = "";
+  for (const g of _shopCatalog) {
+    const can = state.balance >= g.coins;
+    const card = document.createElement("div");
+    card.className = "shop-card" + (can ? "" : " disabled");
+    card.innerHTML = `
+      <div class="shop-emoji">${g.emoji}</div>
+      <div class="shop-name">${g.name}</div>
+      <div class="shop-price">
+        <span class="stars">⭐ ${g.stars}</span>
+        <span class="coins">${fmt(g.coins)} 🪙</span>
+      </div>
+      <button class="shop-buy-btn" ${can ? "" : "disabled"}>${can ? "Купить" : "Не хватает"}</button>
+    `;
+    card.querySelector(".shop-buy-btn").addEventListener("click", () => {
+      if (!can) return;
+      _pendingGift = g;
+      $("#scIco").textContent = g.emoji;
+      $("#scTitle").textContent = `Купить «${g.name}»?`;
+      $("#scSub").textContent = `Спишется ${fmt(g.coins)} монет (${g.stars} ⭐). Админ отправит подарок в Telegram вручную.`;
+      $("#scAmount").textContent = `−${fmt(g.coins)} 🪙`;
+      $("#shopConfirmModal").classList.add("open");
+    });
+    grid.appendChild(card);
+  }
+  loadOrders();
+}
+
+async function loadOrders() {
+  if (!SERVER) return;
+  const list = $("#ordersList");
+  const r = await API.shopOrders();
+  if (!r.ok) { list.innerHTML = `<div class="orders-empty">Не удалось загрузить</div>`; return; }
+  const items = r.data.items || [];
+  if (items.length === 0) { list.innerHTML = `<div class="orders-empty">Пока нет заявок.</div>`; return; }
+  list.innerHTML = "";
+  for (const o of items) {
+    const statusMap = {
+      pending:   { text: "В обработке", cls: "pending" },
+      sent:      { text: "Отправлено",  cls: "sent" },
+      cancelled: { text: "Отменено",    cls: "cancelled" },
+    };
+    const s = statusMap[o.status] || statusMap.pending;
+    const date = o.created_at ? new Date(o.created_at).toLocaleDateString("ru-RU", {day:"numeric", month:"short"}) : "";
+    const row = document.createElement("div");
+    row.className = "order-row";
+    row.innerHTML = `
+      <div class="order-emoji">${o.gift_emoji}</div>
+      <div class="order-info">
+        <div class="order-name">${o.gift_name}</div>
+        <div class="order-meta">⭐ ${o.stars} · ${fmt(o.coins)} 🪙 · ${date}</div>
+      </div>
+      <div class="order-status ${s.cls}">${s.text}</div>
+    `;
+    list.appendChild(row);
+  }
+}
+
+$("#scCancel").addEventListener("click", () => {
+  $("#shopConfirmModal").classList.remove("open");
+  _pendingGift = null;
+});
+$("#scConfirm").addEventListener("click", async () => {
+  if (!_pendingGift) return;
+  const btn = $("#scConfirm");
+  btn.disabled = true; btn.textContent = "Подождите...";
+  const r = await API.shopBuy(_pendingGift.id);
+  btn.disabled = false; btn.textContent = "Подтвердить";
+  $("#shopConfirmModal").classList.remove("open");
+  if (!r.ok) {
+    toast("Ошибка: " + (r.error || "?"), "lose");
+    haptic("lose");
+    return;
+  }
+  state.balance = r.data.balance;
+  refreshBalance();
+  toast(`Заявка на ${_pendingGift.emoji} оформлена!`, "win");
+  haptic("win");
+  showBigWin(_pendingGift.coins, `🛍 ${_pendingGift.name}`, { ico: _pendingGift.emoji, title: "Скоро придёт!" });
+  _pendingGift = null;
+  await renderShop();
+});
+
+// ============================================================
+// 🏆 ЛИДЕРБОРД
+// ============================================================
+let _lbMetric = "balance";
+$$(".lb-tab").forEach(t => t.addEventListener("click", () => {
+  $$(".lb-tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  _lbMetric = t.dataset.lbMetric;
+  renderLeaderboard();
+  haptic("light");
+}));
+
+async function renderLeaderboard() {
+  const list = $("#lbList");
+  if (!SERVER) {
+    list.innerHTML = `<div class="lb-loading">Лидерборд доступен только в Telegram.</div>`;
+    return;
+  }
+  list.innerHTML = `<div class="lb-loading">Загружаю...</div>`;
+  const r = await API.leaderboard(_lbMetric, 50);
+  if (!r.ok) { list.innerHTML = `<div class="lb-loading">Ошибка</div>`; return; }
+  const items = r.data.items || [];
+  if (items.length === 0) { list.innerHTML = `<div class="lb-loading">Пока пусто. Будь первым!</div>`; return; }
+  const valueOf = (x) => {
+    if (_lbMetric === "balance") return x.balance;
+    if (_lbMetric === "total_won") return x.total_won;
+    if (_lbMetric === "biggest_win") return x.biggest_win;
+    if (_lbMetric === "streak_best") return x.streak_best;
+    return x.balance;
+  };
+  list.innerHTML = "";
+  items.forEach((it, i) => {
+    const rank = i + 1;
+    const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `#${rank}`;
+    const name = it.username ? "@" + it.username : (it.first_name || "Игрок");
+    const row = document.createElement("div");
+    row.className = "lb-row" + (it.is_me ? " me" : "");
+    if (rank <= 3) row.classList.add("top" + rank);
+    row.innerHTML = `
+      <div class="lb-rank">${medal}</div>
+      <div class="lb-avatar">${(it.first_name?.[0] || "?").toUpperCase()}</div>
+      <div class="lb-name">${name}${it.is_me ? " <span class='lb-you'>ты</span>" : ""}</div>
+      <div class="lb-val">${fmt(valueOf(it))}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+// ============================================================
+// 🚀 СТАРТ
+// ============================================================
+syncFromServer().then(() => {
+  // обновим главную после загрузки сервера
+  renderHome();
+});
+
+// первый рендер главной даже без сервера
+renderHome();
 
 })();

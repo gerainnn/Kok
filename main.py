@@ -1,7 +1,8 @@
 """
-GameBuddy — Telegram-бот, с которым можно скоротать время.
-Игры: крестики-нолики (с непобедимым ИИ), КНБ, угадай число, виселица,
-викторина, кубик/монетка + Web App «Поймай звезду».
+GameBuddy — Telegram-бот + Web App «Казино».
+Игры в чате: крестики-нолики (минимакс), КНБ, угадай число, виселица,
+викторина (без повторов), города, загадки, кубик/монетка, AI-чат.
+В WebApp — казино, кейсы, аркады, магазин ТГ-подарков, лидерборд.
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ from aiogram.types import (
 from aiohttp import web
 
 from games import ai_chat, cities, fun, hangman, quiz, tictactoe
+from server import api as srv_api
+from server import db, quiz_ai
 
 # ---------- конфиг ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -41,11 +44,19 @@ if not BOT_TOKEN:
         "Создай .env (см. .env.example) или задай переменную окружения."
     )
 
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL env-переменная не задана. "
+        "Возьми бесплатный Postgres на neon.tech и положи connection string."
+    )
+
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+
 # Render выставляет PORT, локально можно задать WEB_PORT, иначе 8080
 WEB_PORT = int(os.getenv("PORT") or os.getenv("WEB_PORT") or "8080")
 
 # Публичный URL: Render автоматически кладёт его в RENDER_EXTERNAL_URL.
-# Локально можно задать PUBLIC_URL вручную (например, ngrok-ссылку).
 PUBLIC_URL = (
     os.getenv("PUBLIC_URL")
     or os.getenv("RENDER_EXTERNAL_URL")
@@ -151,16 +162,26 @@ def dice_keyboard() -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def start_cmd(msg: Message, state: FSMContext) -> None:
     await state.clear()
+    # Регистрируем юзера в БД (и выдаём бонус, если первый раз)
+    try:
+        await db.upsert_user(
+            user_id=msg.from_user.id,
+            username=msg.from_user.username,
+            first_name=msg.from_user.first_name,
+            last_name=msg.from_user.last_name,
+        )
+    except Exception as e:
+        log.warning("upsert_user failed: %s", e)
+
     await msg.answer(
         f"<b>Привет, {msg.from_user.first_name}!</b> 👋\n\n"
         "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n\n"
-        "🎰 <b>«Открыть Казино»</b> — целый Web App: слоты, рулетка, "
-        "crash, mines, кейсы x1/x5/x10, контракты улучшения, инвентарь, "
-        "кликер с прокачкой и виртуальная валюта <b>GameCoins</b>.\n\n"
+        "🎰 <b>«Открыть Казино»</b> — Web App: слоты, рулетка, "
+        "crash, mines, кейсы, магазин ТГ-подарков, лидерборд, "
+        "виртуальная валюта <b>GameCoins</b>.\n\n"
         "🎮 <b>«Игры»</b> — мини-игры в чате (крестики-нолики, виселица, "
-        "города, загадки, викторина).\n\n"
+        "города, викторина без повторов).\n\n"
         "🤖 <b>«Поболтать»</b> — могу просто поболтать с тобой на любую тему.\n\n"
-        "Ещё есть кнопки: 😂 шутка, 💡 факт, 🌒 страшилка, 🎲 случайное.\n\n"
         "Команды: /games /quiz /chat /city /joke /fact /riddle /story /help",
         reply_markup=main_menu(PUBLIC_URL),
     )
@@ -177,16 +198,15 @@ async def help_cmd(msg: Message) -> None:
         "• 🔢 Угадай число (1..100)\n"
         "• 🪢 Виселица — слова на русском\n"
         "• 🌆 Города — играем в города по буквам\n"
-        "• ❓ Викторина — общие знания\n"
+        "• ❓ Викторина — без повторов, бонус +coins за серию\n"
         "• 🤔 Загадки\n"
         "• 🎲 Кубик / монетка / дартс\n"
-        "• 🤖 Свободный чат с AI\n"
-        "• 😂 Шутки, 💡 факты, 🌒 страшилки\n\n"
+        "• 🤖 Свободный чат с AI\n\n"
         "<b>В Web App «Казино»:</b>\n"
         "• 🎰 Слоты, 🎯 Рулетка, 🚀 Crash, 💣 Mines, 🎡 Колесо, 🪙 Coinflip\n"
-        "• 📦 8 видов кейсов, multi-open x1/x5/x10\n"
-        "• 🔧 Контракты улучшения (5→1)\n"
-        "• 👆 Кликер с прокачкой, GameCoins, инвентарь\n\n"
+        "• 📦 Кейсы, multi-open x1/x5/x10, инвентарь, контракты\n"
+        "• 🛍 Магазин — обменять GameCoins на реальные ТГ-подарки\n"
+        "• 🏆 Лидерборд — топ по балансу, выигрышу и серии\n\n"
         "Команды: /start /games /quiz /chat /city /joke /fact /riddle /story /dice"
     )
 
@@ -214,7 +234,7 @@ async def game_pick(cb: CallbackQuery, state: FSMContext) -> None:
     elif kind == "riddle":
         await start_riddle(cb.message, state)
     elif kind == "quiz":
-        await ask_quiz(cb.message)
+        await ask_quiz(cb.message, user_id=cb.from_user.id)
     elif kind == "dice":
         await cb.message.answer("Что бросаем?", reply_markup=dice_keyboard())
     await cb.answer()
@@ -390,10 +410,9 @@ async def hangman_step(msg: Message, state: FSMContext) -> None:
     )
 
 
-# ---------- викторина ----------
-QUIZ_CURRENT: dict[int, dict[str, Any]] = {}      # текущий вопрос chat_id -> q
+# ---------- викторина (без повторов через БД) ----------
+QUIZ_CURRENT: dict[int, dict[str, Any]] = {}      # текущий вопрос chat_id -> q (с question_id)
 QUIZ_CATEGORY: dict[int, str] = {}                # выбранная категория chat_id -> code
-QUIZ_SCORE: dict[int, dict[str, int]] = {}        # счёт chat_id -> {right, wrong, streak, best_streak}
 
 
 def quiz_categories_keyboard() -> InlineKeyboardMarkup:
@@ -404,25 +423,60 @@ def quiz_categories_keyboard() -> InlineKeyboardMarkup:
         for code, name in items[i:i + 2]:
             row.append(InlineKeyboardButton(text=name, callback_data=f"quizcat:{code}"))
         rows.append(row)
+    rows.append([InlineKeyboardButton(text="♻️ Сбросить прогресс", callback_data="quizcat:_reset")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _quiz_score_line(chat_id: int) -> str:
-    s = QUIZ_SCORE.get(chat_id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
-    return (f"📊 {s['right']} ✅ / {s['wrong']} ❌ · "
-            f"серия {s['streak']} (рекорд {s['best_streak']})")
+async def _user_quiz_score_line(user_id: int) -> str:
+    try:
+        u = await db.get_user(user_id)
+    except Exception:
+        u = None
+    if not u:
+        return "📊 0 ✅ / 0 ❌"
+    return f"📊 серия {u.get('streak_now') or 0} (рекорд {u.get('streak_best') or 0})"
 
 
-async def ask_quiz(message: Message) -> None:
-    chat_id = message.chat.id
-    cat = QUIZ_CATEGORY.get(chat_id, "any")
-    q = quiz.random_question(cat)
-    QUIZ_CURRENT[chat_id] = q
+async def ask_quiz(message: Message, user_id: int) -> None:
+    cat = QUIZ_CATEGORY.get(message.chat.id, "any")
+
+    seen = await db.quiz_seen_ids(user_id)
+    q = quiz.pick_unseen(cat, seen)
+
+    if q is None:
+        # Пробуем AI-кэш
+        ai_q = await db.quiz_ai_pick_unseen(user_id, cat)
+        if ai_q:
+            payload = ai_q["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            q = {
+                "q": payload["q"],
+                "options": payload["options"],
+                "answer": int(payload["answer"]),
+                "cat": ai_q.get("category", "any"),
+                "_id": ai_q["question_id"],
+            }
+            # форсим фоновую догенерацию
+            asyncio.create_task(quiz_ai.background_replenish(cat))
+        else:
+            asyncio.create_task(quiz_ai.background_replenish(cat))
+            await message.answer(
+                "🎉 Ты прошёл все вопросы в этой категории!\n"
+                "Я уже генерирую новые — попробуй через минуту, или жми «♻️ Сбросить прогресс».",
+                reply_markup=quiz_categories_keyboard(),
+            )
+            return
+
+    if "_id" not in q:
+        q = {**q, "_id": quiz.question_id(q)}
+
+    QUIZ_CURRENT[message.chat.id] = q
     cat_label = quiz.CATEGORIES.get(cat, "🎲 Случайные")
     await message.answer(
         f"{cat_label}\n"
         f"❓ <b>{q['q']}</b>\n\n"
-        f"<i>{_quiz_score_line(chat_id)}</i>",
+        f"<i>{await _user_quiz_score_line(user_id)}</i>",
         reply_markup=quiz_keyboard(q["options"]),
     )
 
@@ -431,7 +485,7 @@ async def ask_quiz(message: Message) -> None:
 @router.message(F.text == "❓ Викторина")
 async def quiz_cmd(msg: Message) -> None:
     await msg.answer(
-        "❓ <b>Викторина</b>\nВыбери категорию:",
+        "❓ <b>Викторина</b>\nВопросы не повторяются — за каждый правильный +coins.\nВыбери категорию:",
         reply_markup=quiz_categories_keyboard(),
     )
 
@@ -439,12 +493,15 @@ async def quiz_cmd(msg: Message) -> None:
 @router.callback_query(F.data.startswith("quizcat:"))
 async def quiz_choose_cat(cb: CallbackQuery) -> None:
     code = cb.data.split(":", 1)[1]
+    if code == "_reset":
+        await db.quiz_reset_progress(cb.from_user.id)
+        await cb.answer("Прогресс сброшен", show_alert=False)
+        await ask_quiz(cb.message, user_id=cb.from_user.id)
+        return
     if code not in quiz.CATEGORIES:
         code = "any"
     QUIZ_CATEGORY[cb.message.chat.id] = code
-    # обнулять счёт не будем — пусть копится за сессию
-    QUIZ_SCORE.setdefault(cb.message.chat.id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
-    await ask_quiz(cb.message)
+    await ask_quiz(cb.message, user_id=cb.from_user.id)
     await cb.answer()
 
 
@@ -453,7 +510,7 @@ async def quiz_answer(cb: CallbackQuery) -> None:
     payload = cb.data.split(":", 1)[1]
     chat_id = cb.message.chat.id
     if payload == "next":
-        await ask_quiz(cb.message)
+        await ask_quiz(cb.message, user_id=cb.from_user.id)
         await cb.answer()
         return
     if payload == "menu":
@@ -470,23 +527,27 @@ async def quiz_answer(cb: CallbackQuery) -> None:
         return
 
     pick = int(payload)
-    correct = q["answer"]
-    score = QUIZ_SCORE.setdefault(chat_id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
-    if pick == correct:
-        score["right"] += 1
-        score["streak"] += 1
-        if score["streak"] > score["best_streak"]:
-            score["best_streak"] = score["streak"]
-    else:
-        score["wrong"] += 1
-        score["streak"] = 0
+    correct = int(q["answer"])
+    is_correct = pick == correct
+    qid = q.get("_id") or quiz.question_id(q)
 
-    if pick == correct:
+    streak = await db.quiz_record_answer(cb.from_user.id, qid, is_correct)
+    reward_text = ""
+    if is_correct:
+        reward = 20 + 5 * min(streak["streak_now"], 30)
+        try:
+            await db.adjust_balance(cb.from_user.id, reward, kind="quiz")
+            reward_text = f"\n💰 +{reward} GameCoins"
+        except Exception:
+            pass
+
+    score_line = await _user_quiz_score_line(cb.from_user.id)
+    if is_correct:
         await cb.answer("✅ Верно!", show_alert=False)
         await cb.message.edit_text(
             f"❓ {q['q']}\n\n"
-            f"✅ <b>{q['options'][correct]}</b> — правильно!\n\n"
-            f"<i>{_quiz_score_line(chat_id)}</i>",
+            f"✅ <b>{q['options'][correct]}</b> — правильно!{reward_text}\n\n"
+            f"<i>{score_line}</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next"),
                 InlineKeyboardButton(text="📁 Категория", callback_data="quiz:menu"),
@@ -498,7 +559,7 @@ async def quiz_answer(cb: CallbackQuery) -> None:
             f"❓ {q['q']}\n\n"
             f"❌ Ты выбрал: <b>{q['options'][pick]}</b>\n"
             f"✅ Правильно: <b>{q['options'][correct]}</b>\n\n"
-            f"<i>{_quiz_score_line(chat_id)}</i>",
+            f"<i>{score_line}</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next"),
                 InlineKeyboardButton(text="📁 Категория", callback_data="quiz:menu"),
@@ -697,7 +758,6 @@ async def ai_chat_step(msg: Message, state: FSMContext) -> None:
         return
 
     history = AI_HISTORY.setdefault(msg.from_user.id, [])
-    # показываем «печатает...»
     try:
         await msg.bot.send_chat_action(msg.chat.id, action="typing")
     except Exception:
@@ -716,11 +776,7 @@ async def ai_chat_step(msg: Message, state: FSMContext) -> None:
     await msg.answer(reply)
 
 
-# ---------- web app data ----------
-# Биг-вины теперь показываются модалкой ВНУТРИ Web App, не выкидывают пользователя.
-# Здесь обрабатываем только legacy «catch_star» и любые ручные отправки.
-
-
+# ---------- legacy webapp data (catch_star) ----------
 @router.message(F.web_app_data)
 async def webapp_data(msg: Message) -> None:
     try:
@@ -728,24 +784,136 @@ async def webapp_data(msg: Message) -> None:
     except Exception:
         await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
         return
-
-    # legacy: catch_star
     if data.get("game") == "catch_star":
         score = data.get("score", 0)
-        comment = (
-            "🌟 Космический ас!" if score >= 30
-            else "💫 Хороший улов!" if score >= 15
-            else "✨ Тренируйся, всё впереди!"
-        )
-        await msg.answer(f"⭐ Твой результат: <b>{score}</b>\n{comment}")
+        await msg.answer(f"⭐ Твой результат: <b>{score}</b>")
+
+
+# ---------- 🛍 уведомления о покупках в магазине ----------
+def gift_admin_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Отправил", callback_data=f"gift:sent:{order_id}"),
+            InlineKeyboardButton(text="❌ Отменить и вернуть", callback_data=f"gift:cancel:{order_id}"),
+        ]]
+    )
+
+
+def _user_link_html(user: dict) -> str:
+    uname = user.get("username")
+    fn = user.get("first_name") or "Игрок"
+    if uname:
+        return f"<a href='https://t.me/{uname}'>@{uname}</a> ({fn})"
+    # фолбэк: tg://user?id=...
+    return f"<a href='tg://user?id={user['id']}'>{fn}</a> (id <code>{user['id']}</code>)"
+
+
+async def admin_notify_purchase(order: dict, user: dict) -> None:
+    """Шлёт уведомление администратору. Идёт через app['bot']."""
+    if not ADMIN_ID:
+        log.warning("ADMIN_ID не задан — пропускаю уведомление о покупке")
+        return
+    bot: Bot = _BOT_GLOBAL
+    if bot is None:
+        log.warning("Bot ещё не инициализирован, не могу отправить уведомление")
         return
 
-    # любой другой payload — просто игнорируем (раньше big_win сюда сыпался)
-    return
+    text = (
+        "🛍 <b>Новая покупка в магазине</b>\n\n"
+        f"Покупатель: {_user_link_html(user)}\n"
+        f"Подарок: <b>{order['gift_emoji']} {order['gift_name']}</b>\n"
+        f"Стоимость: <b>{order['stars']} ⭐</b> ({order['coins']:,} GameCoins)\n"
+        f"Заявка #<code>{order['id']}</code>\n\n"
+        "Когда отправишь подарок в Telegram — нажми <b>«✅ Отправил»</b>.\n"
+        "Если не получается — нажми <b>«❌ Отменить»</b>, монеты вернутся."
+    ).replace(",", " ")
+
+    try:
+        sent = await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=text,
+            reply_markup=gift_admin_keyboard(int(order["id"])),
+        )
+        try:
+            await db.set_gift_order_admin_msg(int(order["id"]), sent.chat.id, sent.message_id)
+        except Exception as e:
+            log.warning("set_gift_order_admin_msg failed: %s", e)
+    except Exception as e:
+        log.exception("Не удалось отправить уведомление админу: %s", e)
 
 
-# ---------- aiohttp: отдаём webapp ----------
+@router.callback_query(F.data.startswith("gift:"))
+async def gift_admin_action(cb: CallbackQuery) -> None:
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Только администратор может это делать.", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Bad payload", show_alert=False)
+        return
+    _, action, oid_str = parts
+    try:
+        order_id = int(oid_str)
+    except ValueError:
+        await cb.answer("Bad order id", show_alert=False)
+        return
+
+    order = await db.get_gift_order(order_id)
+    if not order:
+        await cb.answer("Заявка не найдена", show_alert=True)
+        return
+
+    if action == "sent":
+        updated = await db.mark_gift_sent(order_id)
+        if updated is None:
+            await cb.answer("Заявка уже обработана", show_alert=False)
+            return
+        new_text = (cb.message.html_text or cb.message.text or "") + "\n\n✅ <b>Отправлено</b>"
+        try:
+            await cb.message.edit_text(new_text, reply_markup=None)
+        except Exception:
+            pass
+        # уведомляем покупателя
+        try:
+            await _BOT_GLOBAL.send_message(
+                chat_id=int(order["user_id"]),
+                text=(
+                    f"🎁 Твой подарок <b>{order['gift_emoji']} {order['gift_name']}</b> отправлен!\n"
+                    "Проверь Telegram — он уже у тебя в подарках."
+                ),
+            )
+        except Exception as e:
+            log.warning("notify buyer failed: %s", e)
+        await cb.answer("Отправлено")
+
+    elif action == "cancel":
+        updated = await db.cancel_gift_order(order_id)
+        if updated is None:
+            await cb.answer("Заявка уже обработана", show_alert=False)
+            return
+        new_text = (cb.message.html_text or cb.message.text or "") + "\n\n❌ <b>Отменено, монеты возвращены</b>"
+        try:
+            await cb.message.edit_text(new_text, reply_markup=None)
+        except Exception:
+            pass
+        try:
+            await _BOT_GLOBAL.send_message(
+                chat_id=int(order["user_id"]),
+                text=(
+                    f"😔 Заявка на <b>{order['gift_emoji']} {order['gift_name']}</b> отменена.\n"
+                    f"Монеты ({int(order['coins']):,}) вернулись на баланс."
+                ).replace(",", " "),
+            )
+        except Exception as e:
+            log.warning("notify buyer cancel failed: %s", e)
+        await cb.answer("Отменено, возврат сделан")
+    else:
+        await cb.answer("Unknown action", show_alert=False)
+
+
+# ---------- aiohttp: отдаём webapp + API ----------
 WEBAPP_DIR = Path(__file__).parent / "webapp"
+_BOT_GLOBAL: Bot | None = None  # для использования из api.py
 
 
 async def serve_index(_request: web.Request) -> web.Response:
@@ -760,13 +928,23 @@ def build_web_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", serve_index)
     app.router.add_get("/health", health)
+
+    # API
+    srv_api.setup(app, bot_token=BOT_TOKEN, admin_notify=admin_notify_purchase)
+
     app.router.add_static("/static/", WEBAPP_DIR, show_index=False)
     return app
 
 
 # ---------- main ----------
 async def main() -> None:
+    global _BOT_GLOBAL
+    # БД
+    await db.init(DATABASE_URL)
+
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    _BOT_GLOBAL = bot
+
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
@@ -778,12 +956,17 @@ async def main() -> None:
     log.info("Web server started on :%s", WEB_PORT)
 
     me = await bot.get_me()
-    log.info("Bot started: @%s (id=%s). PUBLIC_URL=%s", me.username, me.id, PUBLIC_URL or "—")
+    log.info("Bot started: @%s (id=%s). PUBLIC_URL=%s ADMIN_ID=%s",
+             me.username, me.id, PUBLIC_URL or "—", ADMIN_ID or "—")
+
+    # фоновое тёплое наполнение AI-кэша при старте (не критично)
+    asyncio.create_task(quiz_ai.background_replenish("any"))
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await runner.cleanup()
+        await db.close()
         await bot.session.close()
 
 

@@ -22,6 +22,8 @@ render.yaml        # one-click деплой на Render
 | Переменная     | Обязательно | Что это                                                      |
 | -------------- | ----------- | ------------------------------------------------------------ |
 | `BOT_TOKEN`    | да          | Токен из [@BotFather](https://t.me/BotFather)                |
+| `DATABASE_URL` | да          | Postgres (например, бесплатный на [neon.tech](https://neon.tech)). Формат: `postgresql://user:pass@host/db?sslmode=require` |
+| `ADMIN_ID`     | да          | Telegram user ID администратора (ты). Туда летят уведомления о покупках в магазине. Узнать: [@userinfobot](https://t.me/userinfobot) |
 | `PUBLIC_URL`   | для WebApp  | Публичный **HTTPS** адрес сервера. Без него кнопка казино не появится в меню. |
 | `WEB_PORT`     | нет         | Порт веб-сервера (по умолчанию 8080)                         |
 | `PORT`         | —           | Render проставит сам, перебивает `WEB_PORT`                  |
