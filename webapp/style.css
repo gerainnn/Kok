@@ -1137,7 +1137,7 @@ body {
 .rogue-arena {
   position: relative;
   flex: 1 1 auto;
-  min-height: 420px;
+  min-height: 260px;
   background: #0a0a1a;
   border: 2px solid var(--border);
   border-radius: 14px;
@@ -1202,21 +1202,21 @@ body {
   background: rgba(7, 7, 26, 0.94);
   backdrop-filter: blur(6px);
   z-index: 10;
-  display: flex; align-items: center; justify-content: center;
-  padding: 14px;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 10px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .rogue-overlay.hidden { display: none; }
 .rogue-menu {
   background: linear-gradient(135deg, #2a1a5a, #1a1a4a);
   border: 2px solid var(--gold);
   border-radius: 18px;
-  padding: 18px 16px;
-  width: 100%; max-width: 320px;
+  padding: 16px 14px;
+  width: 100%; max-width: 300px;
   text-align: center;
   box-shadow: 0 0 30px rgba(255,217,102,0.3);
-  max-height: 100%;
-  overflow-y: auto;
+  margin: auto 0;
 }
 .rogue-menu.hidden { display: none; }
 .rogue-menu h2 {
@@ -1406,7 +1406,7 @@ body {
   position: relative;
   width: 100%;
   aspect-ratio: 1;
-  max-width: 420px;
+  max-width: 340px;
   margin: 0 auto;
   background:
     radial-gradient(ellipse at 50% 50%, #16162a 0%, #0a0a1a 70%);
@@ -1425,10 +1425,11 @@ body {
   position: absolute; inset: 0;
   background: rgba(7,7,26,0.92);
   backdrop-filter: blur(6px);
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: flex-start; justify-content: center;
   text-align: center;
-  padding: 14px;
+  padding: 12px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   z-index: 5;
 }
 .snake-overlay.hidden { display: none; }
