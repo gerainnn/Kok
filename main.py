@@ -116,7 +116,10 @@ def quiz_keyboard(options: list[str]) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=opt, callback_data=f"quiz:{i}")]
             for i, opt in enumerate(options)
-        ] + [[InlineKeyboardButton(text="➡️ Следующий вопрос", callback_data="quiz:next")]]
+        ] + [[
+            InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next"),
+            InlineKeyboardButton(text="📁 Категория", callback_data="quiz:menu"),
+        ]]
     )
 
 
@@ -374,14 +377,38 @@ async def hangman_step(msg: Message, state: FSMContext) -> None:
 
 
 # ---------- викторина ----------
-QUIZ_CURRENT: dict[int, dict[str, Any]] = {}
+QUIZ_CURRENT: dict[int, dict[str, Any]] = {}      # текущий вопрос chat_id -> q
+QUIZ_CATEGORY: dict[int, str] = {}                # выбранная категория chat_id -> code
+QUIZ_SCORE: dict[int, dict[str, int]] = {}        # счёт chat_id -> {right, wrong, streak, best_streak}
+
+
+def quiz_categories_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    items = list(quiz.CATEGORIES.items())
+    for i in range(0, len(items), 2):
+        row = []
+        for code, name in items[i:i + 2]:
+            row.append(InlineKeyboardButton(text=name, callback_data=f"quizcat:{code}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _quiz_score_line(chat_id: int) -> str:
+    s = QUIZ_SCORE.get(chat_id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
+    return (f"📊 {s['right']} ✅ / {s['wrong']} ❌ · "
+            f"серия {s['streak']} (рекорд {s['best_streak']})")
 
 
 async def ask_quiz(message: Message) -> None:
-    q = quiz.random_question()
-    QUIZ_CURRENT[message.chat.id] = q
+    chat_id = message.chat.id
+    cat = QUIZ_CATEGORY.get(chat_id, "any")
+    q = quiz.random_question(cat)
+    QUIZ_CURRENT[chat_id] = q
+    cat_label = quiz.CATEGORIES.get(cat, "🎲 Случайные")
     await message.answer(
-        f"❓ <b>{q['q']}</b>",
+        f"{cat_label}\n"
+        f"❓ <b>{q['q']}</b>\n\n"
+        f"<i>{_quiz_score_line(chat_id)}</i>",
         reply_markup=quiz_keyboard(q["options"]),
     )
 
@@ -389,30 +416,66 @@ async def ask_quiz(message: Message) -> None:
 @router.message(Command("quiz"))
 @router.message(F.text == "❓ Викторина")
 async def quiz_cmd(msg: Message) -> None:
-    await ask_quiz(msg)
+    await msg.answer(
+        "❓ <b>Викторина</b>\nВыбери категорию:",
+        reply_markup=quiz_categories_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("quizcat:"))
+async def quiz_choose_cat(cb: CallbackQuery) -> None:
+    code = cb.data.split(":", 1)[1]
+    if code not in quiz.CATEGORIES:
+        code = "any"
+    QUIZ_CATEGORY[cb.message.chat.id] = code
+    # обнулять счёт не будем — пусть копится за сессию
+    QUIZ_SCORE.setdefault(cb.message.chat.id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
+    await ask_quiz(cb.message)
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("quiz:"))
 async def quiz_answer(cb: CallbackQuery) -> None:
     payload = cb.data.split(":", 1)[1]
+    chat_id = cb.message.chat.id
     if payload == "next":
         await ask_quiz(cb.message)
         await cb.answer()
         return
+    if payload == "menu":
+        await cb.message.answer(
+            "❓ Выбери категорию:",
+            reply_markup=quiz_categories_keyboard(),
+        )
+        await cb.answer()
+        return
 
-    q = QUIZ_CURRENT.get(cb.message.chat.id)
+    q = QUIZ_CURRENT.get(chat_id)
     if not q:
         await cb.answer("Вопрос устарел, жми «следующий».", show_alert=False)
         return
 
     pick = int(payload)
     correct = q["answer"]
+    score = QUIZ_SCORE.setdefault(chat_id, {"right": 0, "wrong": 0, "streak": 0, "best_streak": 0})
+    if pick == correct:
+        score["right"] += 1
+        score["streak"] += 1
+        if score["streak"] > score["best_streak"]:
+            score["best_streak"] = score["streak"]
+    else:
+        score["wrong"] += 1
+        score["streak"] = 0
+
     if pick == correct:
         await cb.answer("✅ Верно!", show_alert=False)
         await cb.message.edit_text(
-            f"❓ {q['q']}\n\n✅ <b>{q['options'][correct]}</b> — правильно!",
+            f"❓ {q['q']}\n\n"
+            f"✅ <b>{q['options'][correct]}</b> — правильно!\n\n"
+            f"<i>{_quiz_score_line(chat_id)}</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next")
+                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next"),
+                InlineKeyboardButton(text="📁 Категория", callback_data="quiz:menu"),
             ]]),
         )
     else:
@@ -420,9 +483,11 @@ async def quiz_answer(cb: CallbackQuery) -> None:
         await cb.message.edit_text(
             f"❓ {q['q']}\n\n"
             f"❌ Ты выбрал: <b>{q['options'][pick]}</b>\n"
-            f"✅ Правильно: <b>{q['options'][correct]}</b>",
+            f"✅ Правильно: <b>{q['options'][correct]}</b>\n\n"
+            f"<i>{_quiz_score_line(chat_id)}</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next")
+                InlineKeyboardButton(text="➡️ Следующий", callback_data="quiz:next"),
+                InlineKeyboardButton(text="📁 Категория", callback_data="quiz:menu"),
             ]]),
         )
 
@@ -579,6 +644,11 @@ async def fact_cmd(msg: Message) -> None:
 @router.message(F.text == "🌒 Страшилка")
 async def story_cmd(msg: Message) -> None:
     await msg.answer(fun.random_story())
+
+
+@router.message(Command("advice"))
+async def advice_cmd(msg: Message) -> None:
+    await msg.answer(fun.random_advice())
 
 
 # ---------- 🤖 AI чат ----------

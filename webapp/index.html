@@ -84,10 +84,37 @@
         <button class="inv-tab" data-inv-tab="rare">🔵 Rare+</button>
         <button class="inv-tab" data-inv-tab="legend">🟡 Legend+</button>
       </div>
+
+      <div class="bulk-sell-row">
+        <button class="bulk-btn" data-bulk="common">Продать common</button>
+        <button class="bulk-btn" data-bulk="rare-and-below">Продать rare и ниже</button>
+        <button class="bulk-btn danger" data-bulk="all">Продать всё</button>
+      </div>
+
       <button class="btn-primary" id="openContractBtn" style="margin-bottom: 10px;">
         🔧 Контракт улучшения (5 → 1)
       </button>
       <div class="inv-grid" id="invGrid"></div>
+    </section>
+
+    <!-- ARCADE -->
+    <section class="page" data-page="arcade">
+      <div class="section-title">🎮 Аркада</div>
+      <div class="section-sub">Игры просто для удовольствия. Прогресс копится отдельно от казино.</div>
+      <div class="games-grid">
+        <div class="game-card gc-rogue" data-open="rogue">
+          <div><div class="ico">🗡️</div><div class="name">Подземелье</div><div class="desc">Рогалик: волны врагов, боссы, прокачка</div></div>
+        </div>
+        <div class="game-card gc-2048" data-open="game2048">
+          <div><div class="ico">🔢</div><div class="name">2048</div><div class="desc">Свайпай и сливай числа</div></div>
+        </div>
+        <div class="game-card gc-snake" data-open="snake">
+          <div><div class="ico">🐍</div><div class="name">Змейка</div><div class="desc">Классика, ешь яблоки</div></div>
+        </div>
+      </div>
+
+      <div class="section-title" style="font-size:18px; margin-top:20px;">🏆 Рекорды</div>
+      <div class="stat-grid" id="arcadeRecords"></div>
     </section>
 
     <!-- PROFILE -->
@@ -109,10 +136,11 @@
   </main>
 
   <!-- NAV -->
-  <nav class="nav">
+  <nav class="nav nav-5">
     <button class="nav-item active" data-nav="tap"><span class="ico">👆</span><span>Тап</span></button>
-    <button class="nav-item" data-nav="games"><span class="ico">🎰</span><span>Игры</span></button>
+    <button class="nav-item" data-nav="games"><span class="ico">🎰</span><span>Казино</span></button>
     <button class="nav-item" data-nav="cases"><span class="ico">📦</span><span>Кейсы</span></button>
+    <button class="nav-item" data-nav="arcade"><span class="ico">🎮</span><span>Аркада</span></button>
     <button class="nav-item" data-nav="profile"><span class="ico">👤</span><span>Профиль</span></button>
   </nav>
 </div>
@@ -362,6 +390,51 @@
       <button class="sell-btn" id="itemSellOne">Продать 1</button>
       <button class="sell-btn" id="itemSellAll">Продать все</button>
     </div>
+    <button class="btn-secondary" id="itemUpgradeBtn" style="width:100%; margin-top: 10px;">
+      ⚒️ Апгрейд (попробовать улучшить)
+    </button>
+  </div>
+</div>
+
+<!-- ITEM UPGRADE -->
+<div class="screen" id="screen-upgrade">
+  <div class="screen-header">
+    <button class="back-btn" data-close>‹</button>
+    <div class="title">⚒️ Апгрейд предмета</div>
+    <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
+  </div>
+  <div class="screen-body">
+    <div class="upg-info">
+      Положи предмет. Выбери цель — или другой предмет, или просто множитель цены.
+      Шанс успеха зависит от того, насколько цель дороже исходника.
+      При успехе ты получаешь цель, при провале — теряешь предмет.
+    </div>
+
+    <div class="upg-slots">
+      <div class="upg-slot" id="upgSrc">
+        <div class="upg-slot-label">Исходник</div>
+        <div class="upg-slot-content" id="upgSrcContent">+</div>
+      </div>
+      <div class="upg-arrow">→</div>
+      <div class="upg-slot" id="upgDst">
+        <div class="upg-slot-label">Цель</div>
+        <div class="upg-slot-content" id="upgDstContent">?</div>
+      </div>
+    </div>
+
+    <div class="upg-anim" id="upgAnim" style="display:none;">
+      <div class="upg-progress" id="upgProgress"></div>
+      <div class="upg-anim-text" id="upgAnimText">Куём...</div>
+    </div>
+
+    <div class="upg-mults" id="upgMults"></div>
+
+    <div class="upg-info" id="upgChanceInfo" style="display:none;"></div>
+
+    <button class="btn-primary" id="upgRunBtn" disabled>Выбери исходник</button>
+
+    <div style="font-weight:700; margin: 14px 0 8px;">Твой инвентарь:</div>
+    <div class="contract-pick" id="upgPick"></div>
   </div>
 </div>
 
@@ -392,6 +465,127 @@
     <div class="sub" id="bwSub">— игра —</div>
     <div class="amount" id="bwAmount">+0 🪙</div>
     <button class="btn-primary" id="bwClose">Класс! 🔥</button>
+  </div>
+</div>
+
+<!-- ROGUELIKE: ПОДЗЕМЕЛЬЕ -->
+<div class="screen" id="screen-rogue">
+  <div class="screen-header">
+    <button class="back-btn" id="rogueBack">‹</button>
+    <div class="title">🗡️ Подземелье</div>
+    <div class="balance-mini" id="rogueDepth">Этаж 1</div>
+  </div>
+  <div class="screen-body rogue-body" id="rogueBody">
+    <div class="rogue-hud">
+      <div class="rogue-bar">
+        <div class="rogue-bar-label">❤️ <span id="rogueHpText">100/100</span></div>
+        <div class="rogue-bar-bg"><div class="rogue-bar-fill hp" id="rogueHpFill"></div></div>
+      </div>
+      <div class="rogue-bar">
+        <div class="rogue-bar-label">⭐ Lv.<span id="rogueLvl">1</span> · <span id="rogueXpText">0/10</span></div>
+        <div class="rogue-bar-bg"><div class="rogue-bar-fill xp" id="rogueXpFill"></div></div>
+      </div>
+      <div class="rogue-stats">
+        <span>⏱ <span id="rogueTime">00:00</span></span>
+        <span>👹 <span id="rogueKills">0</span></span>
+        <span>💰 <span id="rogueGold">0</span></span>
+      </div>
+    </div>
+
+    <div class="rogue-arena">
+      <canvas id="rogueCanvas"></canvas>
+      <div class="rogue-overlay" id="rogueOverlay">
+        <div class="rogue-menu" id="rogueMenuStart">
+          <h2>🗡️ Подземелье</h2>
+          <p>Двигайся джойстиком, атаки идут сами.<br>
+          Убивай монстров, повышай уровень, выбирай прокачку.<br>
+          На 5-м, 10-м и 15-м этажах — боссы.</p>
+          <div class="rogue-meta" id="rogueMetaPanel"></div>
+          <button class="btn-primary" id="rogueStartBtn">⚔️ В путь</button>
+        </div>
+        <div class="rogue-menu hidden" id="rogueMenuLevelUp">
+          <h2>⭐ Новый уровень!</h2>
+          <p>Выбери прокачку:</p>
+          <div id="rogueChoices"></div>
+        </div>
+        <div class="rogue-menu hidden" id="rogueMenuDead">
+          <h2 id="rogueDeadTitle">💀 Гибель</h2>
+          <div id="rogueDeadStats"></div>
+          <p style="font-size:12px; opacity:0.8; margin: 8px 0;">
+            За забег копятся <b>Осколки душ</b> для постоянной прокачки.
+          </p>
+          <button class="btn-primary" id="rogueRestartBtn">🔁 Снова</button>
+        </div>
+        <div class="rogue-menu hidden" id="rogueMenuMeta">
+          <h2>🌟 Мета-прокачка</h2>
+          <p>Тратишь Осколки душ — улучшения остаются с тобой навсегда.</p>
+          <div id="rogueMetaList"></div>
+          <button class="btn-secondary" id="rogueMetaClose" style="width:100%; margin-top:8px;">Назад</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rogue-controls">
+      <div class="rogue-stick" id="rogueStick">
+        <div class="rogue-stick-knob" id="rogueStickKnob"></div>
+      </div>
+      <button class="rogue-btn" id="rogueMetaBtn">🌟 Мета</button>
+    </div>
+  </div>
+</div>
+
+<!-- 2048 -->
+<div class="screen" id="screen-game2048">
+  <div class="screen-header">
+    <button class="back-btn" data-close>‹</button>
+    <div class="title">🔢 2048</div>
+    <div class="balance-mini">🏆 <span id="best2048">0</span></div>
+  </div>
+  <div class="screen-body">
+    <div class="g2048-stats">
+      <div class="g2048-stat-card"><div class="label">Счёт</div><div class="value" id="score2048">0</div></div>
+      <div class="g2048-stat-card"><div class="label">Лучший</div><div class="value" id="best2048b">0</div></div>
+      <div class="g2048-stat-card"><div class="label">Ходов</div><div class="value" id="moves2048">0</div></div>
+    </div>
+    <div class="g2048-board" id="g2048Board"></div>
+    <div id="g2048Result" style="text-align:center; margin: 12px 0; min-height:24px;"></div>
+    <button class="btn-primary" id="g2048Restart">🔁 Новая игра</button>
+    <div class="upg-info" style="margin-top: 14px;">
+      💡 Свайпай по полю или используй стрелки. Сливай одинаковые числа, цель — собрать 2048.
+      В ТГ-приложении лучше сворачивать-разворачивать по тапу — иначе свайпы могут конфликтовать.
+    </div>
+  </div>
+</div>
+
+<!-- SNAKE -->
+<div class="screen" id="screen-snake">
+  <div class="screen-header">
+    <button class="back-btn" data-close>‹</button>
+    <div class="title">🐍 Змейка</div>
+    <div class="balance-mini">🏆 <span id="bestSnake">0</span></div>
+  </div>
+  <div class="screen-body">
+    <div class="g2048-stats">
+      <div class="g2048-stat-card"><div class="label">Счёт</div><div class="value" id="scoreSnake">0</div></div>
+      <div class="g2048-stat-card"><div class="label">Длина</div><div class="value" id="lenSnake">3</div></div>
+      <div class="g2048-stat-card"><div class="label">Скорость</div><div class="value" id="spdSnake">1.0x</div></div>
+    </div>
+    <div class="snake-arena">
+      <canvas id="snakeCanvas"></canvas>
+      <div class="snake-overlay hidden" id="snakeOverlay">
+        <div>
+          <h2 id="snakeOverTitle">Готов?</h2>
+          <p id="snakeOverText">Управляй стрелками или свайпами.</p>
+          <button class="btn-primary" id="snakeStart">▶️ Старт</button>
+        </div>
+      </div>
+    </div>
+    <div class="snake-pad">
+      <button class="snake-key" data-snake-dir="up">▲</button>
+      <button class="snake-key" data-snake-dir="left">◀</button>
+      <button class="snake-key" data-snake-dir="down">▼</button>
+      <button class="snake-key" data-snake-dir="right">▶</button>
+    </div>
   </div>
 </div>
 
