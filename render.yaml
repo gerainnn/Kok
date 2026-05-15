@@ -10,5 +10,9 @@ services:
     healthCheckPath: /health
     envVars:
       - key: BOT_TOKEN
-        sync: false       # значение задаёшь в Render Dashboard, в репо не попадёт
+        sync: false       # значение задаёшь в Render Dashboard
+      - key: DATABASE_URL
+        sync: false       # connection string из neon.tech
+      - key: ADMIN_ID
+        sync: false       # твой telegram user id
       # PORT и RENDER_EXTERNAL_URL Render выставит сам, ничего трогать не надо
