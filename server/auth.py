@@ -1,5 +1,14 @@
 """Проверка Telegram WebApp initData по подписи бота.
 https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+
+Поддержка форк-клиентов:
+  Некоторые форки (AyuGram, Nagram, ...) не передают валидную подпись initData
+  (или вовсе не передают initData). Если на сервере включена переменная
+  окружения ALLOW_UNSIGNED_INITDATA=1, то сервер ПРИ ОТСУТСТВИИ/НЕВАЛИДНОЙ
+  подписи попробует взять user-данные из заголовка X-TG-User (JSON), который
+  фронт собирает из initDataUnsafe. Это понижает безопасность (теоретически
+  можно подделать user_id, зная публичный URL казино), поэтому по умолчанию
+  выключено.
 """
 from __future__ import annotations
 
@@ -43,3 +52,32 @@ def parse_init_data(init_data: str, bot_token: str, max_age_sec: int = 86400) ->
             user = None
 
     return {**pairs, "user": user}
+
+
+def parse_unsigned_user(raw_user_json: str) -> Optional[dict]:
+    """Парсит user dict из заголовка X-TG-User (для форк-клиентов).
+
+    Возвращает только если есть валидный числовой id. Это НЕ подтверждает
+    подлинность — использовать только при ALLOW_UNSIGNED_INITDATA=1.
+    """
+    if not raw_user_json:
+        return None
+    try:
+        u = json.loads(raw_user_json)
+    except Exception:
+        return None
+    if not isinstance(u, dict):
+        return None
+    try:
+        uid = int(u.get("id"))
+    except (TypeError, ValueError):
+        return None
+    if uid <= 0:
+        return None
+    return {
+        "id": uid,
+        "username":   (u.get("username") or None),
+        "first_name": (u.get("first_name") or None),
+        "last_name":  (u.get("last_name") or None),
+        "photo_url":  (u.get("photo_url") or None),
+    }

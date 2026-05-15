@@ -15,4 +15,8 @@ services:
         sync: false       # connection string из neon.tech
       - key: ADMIN_ID
         sync: false       # твой telegram user id
+      # Поддержка форк-клиентов Telegram (AyuGram и т.п.). 0 — выкл, 1 — вкл.
+      # Включай, только если знаешь, что делаешь — снижает безопасность.
+      - key: ALLOW_UNSIGNED_INITDATA
+        value: "0"
       # PORT и RENDER_EXTERNAL_URL Render выставит сам, ничего трогать не надо

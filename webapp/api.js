@@ -2,17 +2,44 @@
    Все запросы автоматически отправляют Telegram WebApp initData в заголовке X-Init-Data.
    Если запущено вне Telegram — initData пустой и сервер ответит 401, ловим и работаем
    в demo-режиме (баланс из localStorage, лидерборд недоступен).
+
+   Поддержка форк-клиентов (AyuGram и т.п.):
+     Часть форков не пробрасывает подписанный initData, но даёт initDataUnsafe.user.
+     В этом случае мы дополнительно шлём заголовок X-TG-User с JSON-описанием юзера
+     и считаем себя «в Telegram». Сервер примет такой логин, только если на нём
+     включена переменная ALLOW_UNSIGNED_INITDATA=1.
 */
 (() => {
 "use strict";
 
 const tg = window.Telegram?.WebApp;
 const initData = tg?.initData || "";
+const unsafeUser = tg?.initDataUnsafe?.user || null;
 
-const isTelegram = !!initData;
+// Считаем, что мы внутри Telegram, если есть подписанный initData ЛИБО
+// форк-клиент дал нам хотя бы initDataUnsafe.user.id.
+const hasUnsafeUser = !!(unsafeUser && (unsafeUser.id || unsafeUser.user_id));
+const isTelegram = !!initData || hasUnsafeUser;
+
+// Заголовок для форк-фолбека. Сервер использует его, только если нет валидной
+// подписи и включён ALLOW_UNSIGNED_INITDATA. Безопаснее всегда — тогда сервер
+// сам выберет: подпись приоритетнее.
+let unsafeUserHeader = "";
+if (hasUnsafeUser) {
+  try {
+    unsafeUserHeader = JSON.stringify({
+      id:         unsafeUser.id || unsafeUser.user_id,
+      username:   unsafeUser.username || null,
+      first_name: unsafeUser.first_name || null,
+      last_name:  unsafeUser.last_name || null,
+      photo_url:  unsafeUser.photo_url || null,
+    });
+  } catch (e) { unsafeUserHeader = ""; }
+}
 
 async function http(method, path, body) {
   const headers = { "X-Init-Data": initData };
+  if (unsafeUserHeader) headers["X-TG-User"] = unsafeUserHeader;
   let payload = undefined;
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";

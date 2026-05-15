@@ -16,13 +16,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 from typing import Any, Optional
 
 from aiohttp import web
 
 from . import db, gifts
-from .auth import parse_init_data
+from .auth import parse_init_data, parse_unsigned_user
+
+# Разрешить вход без валидной подписи initData (для форк-клиентов вроде AyuGram,
+# которые не пробрасывают подписанный initData). По умолчанию выключено.
+ALLOW_UNSIGNED = (os.getenv("ALLOW_UNSIGNED_INITDATA", "") or "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 log = logging.getLogger("gamebuddy.api")
 
@@ -48,12 +55,27 @@ async def _read_init_data(request: web.Request) -> Optional[str]:
 async def _auth(request: web.Request) -> Optional[dict]:
     bot_token = request.app["bot_token"]
     init_data = await _read_init_data(request)
-    if not init_data:
+    user_tg: Optional[dict] = None
+
+    if init_data:
+        parsed = parse_init_data(init_data, bot_token)
+        if parsed and parsed.get("user"):
+            user_tg = parsed["user"]
+
+    # Фолбек для форк-клиентов: подписи нет/битая, но фронт прислал user из
+    # initDataUnsafe в заголовке X-TG-User. Включается переменной окружения.
+    if user_tg is None and ALLOW_UNSIGNED:
+        raw = request.headers.get("X-TG-User") or ""
+        user_tg = parse_unsigned_user(raw)
+        if user_tg is not None:
+            log.warning(
+                "auth: unsigned fallback used for user_id=%s (%s)",
+                user_tg.get("id"), user_tg.get("username") or user_tg.get("first_name"),
+            )
+
+    if user_tg is None:
         return None
-    parsed = parse_init_data(init_data, bot_token)
-    if not parsed or not parsed.get("user"):
-        return None
-    user_tg = parsed["user"]
+
     user_db = await db.upsert_user(
         user_id=int(user_tg["id"]),
         username=user_tg.get("username"),
