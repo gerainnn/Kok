@@ -34,9 +34,23 @@ from aiohttp import web
 from games import ai_chat, cities, fun, hangman, quiz, tictactoe
 
 # ---------- конфиг ----------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8836940145:AAH_KRNe1Umuzuqf11prikrgcx7-VKIYtHE")
-WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
-PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # подставится во время запуска
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN env-переменная не задана. "
+        "Создай .env (см. .env.example) или задай переменную окружения."
+    )
+
+# Render выставляет PORT, локально можно задать WEB_PORT, иначе 8080
+WEB_PORT = int(os.getenv("PORT") or os.getenv("WEB_PORT") or "8080")
+
+# Публичный URL: Render автоматически кладёт его в RENDER_EXTERNAL_URL.
+# Локально можно задать PUBLIC_URL вручную (например, ngrok-ссылку).
+PUBLIC_URL = (
+    os.getenv("PUBLIC_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")
+    or ""
+).rstrip("/")
 
 logging.basicConfig(
     level=logging.INFO,

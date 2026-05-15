@@ -1,0 +1,14 @@
+# Render Blueprint: разворачивает GameBuddy одним кликом.
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: gamebuddy
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false       # значение задаёшь в Render Dashboard, в репо не попадёт
+      # PORT и RENDER_EXTERNAL_URL Render выставит сам, ничего трогать не надо
