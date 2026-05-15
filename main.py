@@ -31,7 +31,7 @@ from aiogram.types import (
 )
 from aiohttp import web
 
-from games import hangman, quiz, tictactoe
+from games import ai_chat, cities, fun, hangman, quiz, tictactoe
 
 # ---------- конфиг ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8836940145:AAH_KRNe1Umuzuqf11prikrgcx7-VKIYtHE")
@@ -51,12 +51,17 @@ router = Router()
 class GameStates(StatesGroup):
     guess_number = State()
     hangman = State()
+    cities = State()
+    riddle = State()
+    ai_chat = State()
 
 
 # ---------- клавиатуры ----------
 def main_menu(public_url: str | None) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text="🎮 Игры"), KeyboardButton(text="🎲 Случайное")],
+        [KeyboardButton(text="🎮 Игры"), KeyboardButton(text="🤖 Поболтать")],
+        [KeyboardButton(text="🌆 Города"), KeyboardButton(text="😂 Шутка"), KeyboardButton(text="💡 Факт")],
+        [KeyboardButton(text="🤔 Загадка"), KeyboardButton(text="🌒 Страшилка"), KeyboardButton(text="🎲 Случайное")],
         [KeyboardButton(text="❓ Викторина"), KeyboardButton(text="ℹ️ О боте")],
     ]
     if public_url:
@@ -74,6 +79,8 @@ def games_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✊✋✌️ Камень-ножницы-бумага", callback_data="game:rps")],
             [InlineKeyboardButton(text="🔢 Угадай число", callback_data="game:guess")],
             [InlineKeyboardButton(text="🪢 Виселица", callback_data="game:hangman")],
+            [InlineKeyboardButton(text="🌆 Города", callback_data="game:cities")],
+            [InlineKeyboardButton(text="🤔 Загадки", callback_data="game:riddle")],
             [InlineKeyboardButton(text="❓ Викторина", callback_data="game:quiz")],
             [InlineKeyboardButton(text="🎲 Кубик / 🪙 Монетка", callback_data="game:dice")],
         ]
@@ -130,11 +137,14 @@ async def start_cmd(msg: Message, state: FSMContext) -> None:
     await msg.answer(
         f"<b>Привет, {msg.from_user.first_name}!</b> 👋\n\n"
         "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n\n"
-        "🎰 <b>Жми «Открыть Казино»</b> — там целый Web App: слоты, рулетка, "
-        "crash, mines, кейсы с инвентарём, колесо удачи, coinflip, кликер с прокачкой "
-        "и виртуальная валюта <b>GameCoins</b>.\n\n"
-        "🎮 А «Игры» — это мини-игры прямо в чате (крестики-нолики, виселица, викторина и др.)\n\n"
-        "Команды: /games /quiz /dice /help",
+        "🎰 <b>«Открыть Казино»</b> — целый Web App: слоты, рулетка, "
+        "crash, mines, кейсы x1/x5/x10, контракты улучшения, инвентарь, "
+        "кликер с прокачкой и виртуальная валюта <b>GameCoins</b>.\n\n"
+        "🎮 <b>«Игры»</b> — мини-игры в чате (крестики-нолики, виселица, "
+        "города, загадки, викторина).\n\n"
+        "🤖 <b>«Поболтать»</b> — могу просто поболтать с тобой на любую тему.\n\n"
+        "Ещё есть кнопки: 😂 шутка, 💡 факт, 🌒 страшилка, 🎲 случайное.\n\n"
+        "Команды: /games /quiz /chat /city /joke /fact /riddle /story /help",
         reply_markup=main_menu(PUBLIC_URL),
     )
 
@@ -143,15 +153,24 @@ async def start_cmd(msg: Message, state: FSMContext) -> None:
 @router.message(F.text == "ℹ️ О боте")
 async def help_cmd(msg: Message) -> None:
     await msg.answer(
-        "<b>Что умею:</b>\n"
+        "<b>Что я умею:</b>\n\n"
+        "<b>В чате:</b>\n"
         "• ❌⭕ Крестики-нолики — играю минимаксом, проиграть мне нельзя 😏\n"
         "• ✊✋✌️ Камень-ножницы-бумага — счёт ведётся\n"
-        "• 🔢 Угадай число — 1..100, подсказываю «больше/меньше»\n"
+        "• 🔢 Угадай число (1..100)\n"
         "• 🪢 Виселица — слова на русском\n"
+        "• 🌆 Города — играем в города по буквам\n"
         "• ❓ Викторина — общие знания\n"
+        "• 🤔 Загадки\n"
         "• 🎲 Кубик / монетка / дартс\n"
-        "• ⭐ Web App «Поймай звезду» — мини-игра прямо в Telegram\n\n"
-        "Команды: /start /games /quiz /dice /help"
+        "• 🤖 Свободный чат с AI\n"
+        "• 😂 Шутки, 💡 факты, 🌒 страшилки\n\n"
+        "<b>В Web App «Казино»:</b>\n"
+        "• 🎰 Слоты, 🎯 Рулетка, 🚀 Crash, 💣 Mines, 🎡 Колесо, 🪙 Coinflip\n"
+        "• 📦 8 видов кейсов, multi-open x1/x5/x10\n"
+        "• 🔧 Контракты улучшения (5→1)\n"
+        "• 👆 Кликер с прокачкой, GameCoins, инвентарь\n\n"
+        "Команды: /start /games /quiz /chat /city /joke /fact /riddle /story /dice"
     )
 
 
@@ -173,6 +192,10 @@ async def game_pick(cb: CallbackQuery, state: FSMContext) -> None:
         await start_guess(cb, state)
     elif kind == "hangman":
         await start_hangman(cb, state)
+    elif kind == "cities":
+        await start_cities(cb.message, state)
+    elif kind == "riddle":
+        await start_riddle(cb.message, state)
     elif kind == "quiz":
         await ask_quiz(cb.message)
     elif kind == "dice":
@@ -424,19 +447,194 @@ async def rng_step(cb: CallbackQuery) -> None:
     await cb.answer()
 
 
+# ---------- 🌆 Города ----------
+async def start_cities(message: Message, state: FSMContext) -> None:
+    bot_word = cities.bot_pick_city("м", set()) or "москва"
+    used = {bot_word}
+    await state.set_state(GameStates.cities)
+    await state.update_data(used=list(used), last_letter=cities.last_letter(bot_word))
+    await message.answer(
+        f"🌆 <b>Игра «Города»!</b>\n\n"
+        f"Я начинаю: <b>{bot_word.capitalize()}</b>\n"
+        f"Ты называешь город на букву <b>«{cities.last_letter(bot_word).upper()}»</b>.\n\n"
+        f"Чтобы выйти — пиши /stop"
+    )
+
+
+@router.message(Command("city"))
+@router.message(F.text == "🌆 Города")
+async def cities_cmd(msg: Message, state: FSMContext) -> None:
+    await state.clear()
+    await start_cities(msg, state)
+
+
+@router.message(GameStates.cities)
+async def cities_step(msg: Message, state: FSMContext) -> None:
+    text = (msg.text or "").strip().lower()
+    if text in {"/stop", "стоп", "сдаюсь", "хватит"}:
+        await state.clear()
+        await msg.answer("Окей, выходим из «Городов» 🚶")
+        return
+    if not text or not text[0].isalpha():
+        await msg.answer("Пришли название города одним сообщением.")
+        return
+
+    data = await state.get_data()
+    used = set(data.get("used", []))
+    expected = data.get("last_letter")
+
+    if expected and cities.first_alpha(text) != expected:
+        await msg.answer(f"Город должен начинаться на букву <b>«{expected.upper()}»</b>")
+        return
+    if text in used:
+        await msg.answer("Этот город уже называли. Попробуй другой.")
+        return
+    if not cities.is_known_city(text):
+        await msg.answer(
+            f"Не знаю такой город 🤔 Если он реально существует — извини, мой словарь конечен. "
+            f"Попробуй другой на «{expected.upper() if expected else '?'}»."
+        )
+        return
+
+    used.add(text)
+    next_l = cities.last_letter(text)
+    bot_word = cities.bot_pick_city(next_l, used)
+    if not bot_word:
+        await state.clear()
+        await msg.answer(
+            f"🏆 <b>Сдаюсь!</b> Не знаю города на «{next_l.upper()}». Ты победил!"
+        )
+        return
+    used.add(bot_word)
+    await state.update_data(used=list(used), last_letter=cities.last_letter(bot_word))
+    await msg.answer(
+        f"Окей, <b>{text.capitalize()}</b> ✅\n"
+        f"Мой ход: <b>{bot_word.capitalize()}</b>\n"
+        f"Тебе на «{cities.last_letter(bot_word).upper()}»"
+    )
+
+
+# ---------- 🤔 Загадки ----------
+async def start_riddle(message: Message, state: FSMContext) -> None:
+    r = fun.random_riddle()
+    await state.set_state(GameStates.riddle)
+    await state.update_data(answer=r["a"], tries=0)
+    await message.answer(
+        f"🤔 <b>Загадка:</b>\n\n{r['q']}\n\nПиши ответ в чат. Можно «сдаюсь» или /stop"
+    )
+
+
+@router.message(Command("riddle"))
+async def riddle_cmd(msg: Message, state: FSMContext) -> None:
+    await state.clear()
+    await start_riddle(msg, state)
+
+
+@router.message(F.text == "🤔 Загадка")
+async def riddle_btn(msg: Message, state: FSMContext) -> None:
+    await state.clear()
+    await start_riddle(msg, state)
+
+
+@router.message(GameStates.riddle)
+async def riddle_step(msg: Message, state: FSMContext) -> None:
+    text = (msg.text or "").strip().lower()
+    data = await state.get_data()
+    answer = data["answer"].lower()
+    tries = data.get("tries", 0) + 1
+
+    if text in {"/stop", "сдаюсь", "не знаю", "не догадаюсь"}:
+        await state.clear()
+        await msg.answer(f"Ответ был: <b>{answer.upper()}</b> 🙃 Хочешь ещё? /riddle")
+        return
+
+    if answer in text or text in answer:
+        await state.clear()
+        await msg.answer(f"🎯 Точно! <b>{answer.upper()}</b> Угадал с {tries}-й попытки.\n\nЕщё одну? /riddle")
+        return
+
+    if tries >= 3:
+        await state.clear()
+        await msg.answer(f"😅 Ответ: <b>{answer.upper()}</b>. Ещё разок? /riddle")
+        return
+
+    await state.update_data(tries=tries)
+    await msg.answer(f"❌ Не то. Попыток осталось: {3 - tries}")
+
+
+# ---------- одноразовый контент ----------
+@router.message(Command("joke"))
+@router.message(F.text == "😂 Шутка")
+async def joke_cmd(msg: Message) -> None:
+    await msg.answer("😂 " + fun.random_joke())
+
+
+@router.message(Command("fact"))
+@router.message(F.text == "💡 Факт")
+async def fact_cmd(msg: Message) -> None:
+    await msg.answer(fun.random_fact())
+
+
+@router.message(Command("story"))
+@router.message(F.text == "🌒 Страшилка")
+async def story_cmd(msg: Message) -> None:
+    await msg.answer(fun.random_story())
+
+
+# ---------- 🤖 AI чат ----------
+AI_HISTORY: dict[int, list[dict]] = {}
+
+
+@router.message(Command("chat"))
+@router.message(F.text == "🤖 Поболтать")
+async def ai_chat_start(msg: Message, state: FSMContext) -> None:
+    await state.set_state(GameStates.ai_chat)
+    AI_HISTORY[msg.from_user.id] = []
+    await msg.answer(
+        "🤖 <b>Свободный чат включён.</b>\n"
+        "Спрашивай что угодно или просто болтай. Чтобы выйти — /stop"
+    )
+
+
+@router.message(Command("stop"))
+async def stop_any(msg: Message, state: FSMContext) -> None:
+    await state.clear()
+    await msg.answer("Остановил. Что дальше? /games /chat /quiz")
+
+
+@router.message(GameStates.ai_chat)
+async def ai_chat_step(msg: Message, state: FSMContext) -> None:
+    text = (msg.text or "").strip()
+    if not text:
+        return
+    if text.lower() in {"/stop", "стоп", "хватит"}:
+        await state.clear()
+        await msg.answer("Хорошо, болтаем в другой раз 👋")
+        return
+
+    history = AI_HISTORY.setdefault(msg.from_user.id, [])
+    # показываем «печатает...»
+    try:
+        await msg.bot.send_chat_action(msg.chat.id, action="typing")
+    except Exception:
+        pass
+
+    reply = await ai_chat.ask_ai(text, history)
+    if not reply:
+        await msg.answer("Связь с моим разумом ненадолго потерялась 🛰️ Попробуй ещё раз.")
+        return
+
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": reply})
+    if len(history) > 12:
+        del history[: len(history) - 12]
+
+    await msg.answer(reply)
+
+
 # ---------- web app data ----------
-GAME_TITLES = {
-    "slots": "🎰 Слоты",
-    "roulette": "🎯 Рулетка",
-    "crash": "🚀 Crash",
-    "mines": "💣 Mines",
-    "wheel": "🎡 Колесо удачи",
-    "coinflip": "🪙 Coinflip",
-    "case_bronze": "📦 Бронзовый кейс",
-    "case_silver": "🎁 Серебряный кейс",
-    "case_gold": "🏆 Золотой кейс",
-    "case_diamond": "💎 Алмазный кейс",
-}
+# Биг-вины теперь показываются модалкой ВНУТРИ Web App, не выкидывают пользователя.
+# Здесь обрабатываем только legacy «catch_star» и любые ручные отправки.
 
 
 @router.message(F.web_app_data)
@@ -445,19 +643,6 @@ async def webapp_data(msg: Message) -> None:
         data = json.loads(msg.web_app_data.data)
     except Exception:
         await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
-        return
-
-    # биг-вины из казино
-    if data.get("type") == "big_win":
-        amount = int(data.get("amount", 0))
-        balance = int(data.get("balance", 0))
-        game = GAME_TITLES.get(data.get("game", ""), data.get("game", "игра"))
-        emoji = "🎰🎉" if amount >= 10000 else "🤑" if amount >= 5000 else "🔥"
-        await msg.answer(
-            f"{emoji} <b>БОЛЬШОЙ ВЫИГРЫШ!</b>\n"
-            f"{game} принёс тебе <b>+{amount:,}</b> 🪙\n"
-            f"Баланс: <b>{balance:,}</b>".replace(",", " ")
-        )
         return
 
     # legacy: catch_star
@@ -471,7 +656,8 @@ async def webapp_data(msg: Message) -> None:
         await msg.answer(f"⭐ Твой результат: <b>{score}</b>\n{comment}")
         return
 
-    await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
+    # любой другой payload — просто игнорируем (раньше big_win сюда сыпался)
+    return
 
 
 # ---------- aiohttp: отдаём webapp ----------

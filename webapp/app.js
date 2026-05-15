@@ -1,5 +1,6 @@
 /* ============================================================
-   GameBuddy Casino — игровой движок
+   GameBuddy Casino — игровой движок (v2: проигрышное казино,
+   кейсы x1/x5/x10, инвентарь со стеком, контракт, in-app big win)
    ============================================================ */
 (() => {
 "use strict";
@@ -42,25 +43,52 @@ const DEFAULT_STATE = {
     spins: 0, wins: 0, losses: 0,
     biggestWin: 0, totalWagered: 0, totalWon: 0,
     casesOpened: 0,
+    contractsRun: 0,
   },
-  inventory: [],
+  inventory: [],          // [{ico, name, v, rarity}]   стекаем по ключу name+v
   lastDaily: 0,
-  bigWinThreshold: 1000,
+  bigWinThreshold: 5000,  // повышен порог уведомления, чтобы не спамить
 };
-const STORAGE_KEY = "gamebuddy_casino_v1";
+const STORAGE_KEY = "gamebuddy_casino_v2";
 let state = load();
 
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return Object.assign({}, DEFAULT_STATE, JSON.parse(raw),
-                                   { upgrades: Object.assign({}, DEFAULT_STATE.upgrades, JSON.parse(raw).upgrades || {}),
-                                     stats: Object.assign({}, DEFAULT_STATE.stats, JSON.parse(raw).stats || {}) });
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Object.assign({}, DEFAULT_STATE, parsed, {
+        upgrades: Object.assign({}, DEFAULT_STATE.upgrades, parsed.upgrades || {}),
+        stats: Object.assign({}, DEFAULT_STATE.stats, parsed.stats || {}),
+      });
+    }
   } catch (e) {}
   return JSON.parse(JSON.stringify(DEFAULT_STATE));
 }
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+// ---------- инвентарь как стек ----------
+function invKey(it) { return `${it.rarity}|${it.name}|${it.v}|${it.ico}`; }
+
+function invAdd(item) {
+  const key = invKey(item);
+  const found = state.inventory.find(x => invKey(x) === key);
+  if (found) found.qty = (found.qty || 1) + 1;
+  else state.inventory.push({ ...item, qty: 1 });
+}
+function invRemove(item, count = 1) {
+  const idx = state.inventory.findIndex(x => invKey(x) === invKey(item));
+  if (idx < 0) return 0;
+  const cur = state.inventory[idx];
+  cur.qty = (cur.qty || 1) - count;
+  if (cur.qty <= 0) state.inventory.splice(idx, 1);
+  return count;
+}
+function invTotalQty(it) {
+  const f = state.inventory.find(x => invKey(x) === invKey(it));
+  return f ? (f.qty || 1) : 0;
 }
 
 // ---------- общие UI ----------
@@ -90,11 +118,18 @@ function confettiBurst(n = 60) {
     setTimeout(() => el.remove(), 4500);
   }
 }
-function bigWinNotify(amount, game) {
-  if (!tg || amount < state.bigWinThreshold) return;
-  try {
-    tg.sendData(JSON.stringify({ type: "big_win", game, amount: Math.floor(amount), balance: Math.floor(state.balance) }));
-  } catch (e) {}
+
+// ---------- BIG WIN MODAL внутри приложения ----------
+const bigWinModal = $("#bigWinModal");
+$("#bwClose").addEventListener("click", () => bigWinModal.classList.remove("open"));
+function showBigWin(amount, gameTitle, opts = {}) {
+  $("#bwIco").textContent = opts.ico || (amount >= 50000 ? "🤑" : amount >= 20000 ? "🎰" : "🔥");
+  $("#bwTitle").textContent = opts.title || (amount >= 50000 ? "ДЖЕКПОТ!" : "Большой выигрыш!");
+  $("#bwSub").textContent = gameTitle || "Удача";
+  $("#bwAmount").textContent = "+" + fmt(amount) + " 🪙";
+  bigWinModal.classList.add("open");
+  haptic("win");
+  confettiBurst(80);
 }
 function adjustBalance(delta) {
   state.balance = Math.max(0, state.balance + delta);
@@ -114,7 +149,11 @@ function recordResult(game, wager, win) {
   state.stats.totalWon += win;
   if (win > 0) state.stats.wins++; else state.stats.losses++;
   if (win > state.stats.biggestWin) state.stats.biggestWin = win;
-  if (win >= state.bigWinThreshold) bigWinNotify(win, game);
+  if (win >= state.bigWinThreshold) {
+    const titles = { slots: "🎰 Слоты", roulette: "🎯 Рулетка", crash: "🚀 Crash",
+      mines: "💣 Mines", wheel: "🎡 Колесо", coinflip: "🪙 Coinflip" };
+    showBigWin(win, titles[game] || "");
+  }
   save();
 }
 
@@ -140,7 +179,9 @@ function closeScreen() {
   $$(".screen.open").forEach(s => s.classList.remove("open"));
 }
 $$("[data-open]").forEach(el => el.addEventListener("click", () => openScreen(el.dataset.open)));
-$$("[data-close]").forEach(el => el.addEventListener("click", closeScreen));
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-close]")) closeScreen();
+});
 
 // quick bet chips
 document.addEventListener("click", (e) => {
@@ -153,7 +194,7 @@ document.addEventListener("click", (e) => {
   haptic("light");
 });
 
-// ---------- TAP / CLICKER ----------
+// ---------- TAP / CLICKER (без изменений) ----------
 const tapCoin = $("#tapCoin");
 const tapPerClickEl = $("#tapPerClick");
 const tapCountEl = $("#tapCount");
@@ -217,7 +258,6 @@ function tapHandler(e) {
   tapCoin.classList.remove("pulse"); void tapCoin.offsetWidth; tapCoin.classList.add("pulse");
   haptic(lucky ? "heavy" : "light");
 
-  // floating +N
   const rect = tapCoin.getBoundingClientRect();
   const x = (e.touches?.[0]?.clientX ?? e.clientX ?? rect.left + rect.width / 2);
   const y = (e.touches?.[0]?.clientY ?? e.clientY ?? rect.top + rect.height / 2);
@@ -229,7 +269,6 @@ function tapHandler(e) {
   document.body.appendChild(float);
   setTimeout(() => float.remove(), 1100);
 
-  // throttled save
   if (state.taps % 10 === 0) save();
 }
 tapCoin.addEventListener("pointerdown", tapHandler);
@@ -237,7 +276,7 @@ tapCoin.addEventListener("pointerdown", tapHandler);
 // ---------- DAILY BONUS ----------
 const dailyBtn = $("#dailyBtn");
 function refreshDaily() {
-  const ms = 22 * 60 * 60 * 1000; // 22h
+  const ms = 22 * 60 * 60 * 1000;
   const ready = Date.now() - state.lastDaily >= ms;
   if (ready) {
     dailyBtn.disabled = false;
@@ -264,16 +303,23 @@ dailyBtn.addEventListener("click", () => {
 });
 setInterval(refreshDaily, 60000);
 
-// ---------- SLOTS ----------
+// ============================================================
+// ⚖️  Балансировка: казино теперь проигрышное (RTP ~85-92%)
+// ============================================================
+
+// ---------- SLOTS (порезанные выплаты) ----------
 const SLOT_SYMBOLS = [
-  { s: "🍋", w: 30 },
-  { s: "🍒", w: 25 },
+  { s: "🍋", w: 38 },
+  { s: "🍒", w: 28 },
   { s: "🍀", w: 18 },
-  { s: "⭐", w: 12 },
-  { s: "💎", w: 8 },
-  { s: "7️⃣", w: 4 },
+  { s: "⭐", w: 9 },
+  { s: "💎", w: 5 },
+  { s: "7️⃣", w: 2 },
 ];
-const SLOT_PAYOUT = { "🍋": 3, "🍒": 5, "🍀": 7, "⭐": 10, "💎": 20, "7️⃣": 50 };
+// было: lemon x3, cherry x5, clover x7, star x10, diamond x20, seven x50
+// стало:
+const SLOT_PAYOUT = { "🍋": 2, "🍒": 3, "🍀": 4, "⭐": 6, "💎": 12, "7️⃣": 30 };
+const SLOT_PAIR_PAYOUT = 0;  // пары больше не платят
 
 function renderReelStrip(reelEl, finalSym) {
   const seq = [];
@@ -282,7 +328,6 @@ function renderReelStrip(reelEl, finalSym) {
   reelEl.style.transition = "none";
   reelEl.style.transform = "translateY(0)";
   reelEl.innerHTML = seq.map(s => `<div>${s}</div>`).join("");
-  // force reflow
   void reelEl.offsetWidth;
 }
 function spinReel(reelEl, finalSym, duration) {
@@ -324,10 +369,7 @@ $("#slotsSpin").addEventListener("click", async () => {
   if (result[0] === result[1] && result[1] === result[2]) {
     const m = SLOT_PAYOUT[result[0]];
     win = bet * m;
-    label = `${result.join(" ")} — x${m} ДЖЕКПОТ!`;
-  } else if (result[0] === result[1] || result[1] === result[2] || result[0] === result[2]) {
-    win = Math.floor(bet * 1.5);
-    label = `${result.join(" ")} — пара x1.5`;
+    label = `${result.join(" ")} — x${m}!`;
   } else {
     label = `${result.join(" ")} — мимо`;
   }
@@ -339,7 +381,6 @@ $("#slotsSpin").addEventListener("click", async () => {
     $("#slotsResult").innerHTML = `<div class="result-banner win">+${fmt(win)} · ${label}</div>`;
     toast("Выигрыш +" + fmt(win), "win");
     haptic("win");
-    if (win >= bet * 10) confettiBurst(80);
   } else {
     $("#slotsResult").innerHTML = `<div class="result-banner lose">${label}</div>`;
     haptic("lose");
@@ -347,7 +388,7 @@ $("#slotsSpin").addEventListener("click", async () => {
   btn.disabled = false;
 });
 
-// ---------- ROULETTE ----------
+// ---------- ROULETTE (выплаты американские, нерфим) ----------
 const RED_NUMS = new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
 function rouletteColor(n) {
   if (n === 0) return "green";
@@ -365,17 +406,19 @@ $$("#roulBets .roul-bet").forEach(b => {
 $$("#roulBets .roul-bet")[0].classList.add("selected");
 
 function checkRouletteWin(num, betKey) {
-  if (num === 0) return betKey === "zero" ? 36 : 0;
+  // выплаты: x1.9 для красное/чёрное/чёт/нечёт/low/high (вместо x2);
+  // x2.8 для дюжин (вместо x3); x30 для зеро (вместо x36)
+  if (num === 0) return betKey === "zero" ? 30 : 0;
   switch (betKey) {
-    case "red": return rouletteColor(num) === "red" ? 2 : 0;
-    case "black": return rouletteColor(num) === "black" ? 2 : 0;
+    case "red": return rouletteColor(num) === "red" ? 1.9 : 0;
+    case "black": return rouletteColor(num) === "black" ? 1.9 : 0;
     case "zero": return 0;
-    case "even": return num % 2 === 0 ? 2 : 0;
-    case "odd": return num % 2 === 1 ? 2 : 0;
-    case "low": return num <= 18 ? 2 : 0;
-    case "high": return num >= 19 ? 2 : 0;
-    case "d1": return num <= 12 ? 3 : 0;
-    case "d2": return num >= 13 && num <= 24 ? 3 : 0;
+    case "even": return num % 2 === 0 ? 1.9 : 0;
+    case "odd": return num % 2 === 1 ? 1.9 : 0;
+    case "low": return num <= 18 ? 1.9 : 0;
+    case "high": return num >= 19 ? 1.9 : 0;
+    case "d1": return num <= 12 ? 2.8 : 0;
+    case "d2": return num >= 13 && num <= 24 ? 2.8 : 0;
     default: return 0;
   }
 }
@@ -390,18 +433,17 @@ $("#roulSpin").addEventListener("click", () => {
   haptic("light");
 
   const num = randInt(0, 36);
-  // позиция числа в европейской последовательности (упрощённо: 0 сверху, дальше по часовой)
   const order = [0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
   const idx = order.indexOf(num);
   const segDeg = 360 / 37;
-  const targetAngle = -(idx * segDeg + segDeg / 2); // указатель сверху
+  const targetAngle = -(idx * segDeg + segDeg / 2);
   roulCurrentRotation += 360 * 6 + (targetAngle - (roulCurrentRotation % 360));
   $("#roulWheel").style.transform = `rotate(${roulCurrentRotation}deg)`;
   $("#roulResult").textContent = "...";
 
   setTimeout(() => {
     const mult = checkRouletteWin(num, roulSelectedBet);
-    let win = bet * mult;
+    let win = Math.floor(bet * mult);
     if (win > 0 && state.upgrades.vault > 0) win = Math.floor(win * (1 + 0.05 * state.upgrades.vault));
     const color = rouletteColor(num);
     const colorEmoji = color === "red" ? "🔴" : color === "black" ? "⚫" : "🟢";
@@ -411,7 +453,6 @@ $("#roulSpin").addEventListener("click", () => {
       adjustBalance(win);
       toast("+" + fmt(win), "win");
       haptic("win");
-      if (mult >= 10) confettiBurst(80);
     } else {
       haptic("lose");
     }
@@ -419,23 +460,38 @@ $("#roulSpin").addEventListener("click", () => {
   }, 5100);
 });
 
-// ---------- CRASH ----------
+// ---------- CRASH (понижаем хаусэдж) ----------
 const crashHistory = [];
 function pickCrashPoint() {
-  // тяжёлый хвост, RTP ~95%
+  // RTP ~88% (было 95%)
   const r = Math.random();
-  if (r < 0.05) return 1.00;
-  // обратный экспоненциальный
+  if (r < 0.10) return 1.00;  // больше моментальных крашей
   const e = Math.random();
-  let v = 0.95 / (1 - e);
+  let v = 0.88 / (1 - e);
   if (v > 50) v = 50;
   return Math.max(1.01, parseFloat(v.toFixed(2)));
 }
 let crashAnim = null;
-$("#crashStart").addEventListener("click", () => {
+let crashHandler = null;
+
+function resetCrashUI() {
+  const btn = $("#crashStart");
+  btn.textContent = "🚀 Старт";
+  btn.classList.remove("btn-danger");
+  btn.classList.add("btn-primary");
+  if (crashHandler) { btn.removeEventListener("click", crashHandler); crashHandler = null; }
+  btn.addEventListener("click", startCrash, { once: true });
+  btn.disabled = false;
+  $("#crashMult").textContent = "1.00x";
+  $("#crashMult").classList.remove("crashed");
+  $("#crashRocket").textContent = "🚀";
+  $("#crashRocket").style.transform = "";
+}
+
+function startCrash() {
   if (crashAnim) return;
   const bet = tryWager(parseInt($("#crashBet").value, 10), state.balance);
-  if (!bet) return;
+  if (!bet) { resetCrashUI(); return; }
   const btn = $("#crashStart");
   adjustBalance(-bet);
   haptic("light");
@@ -450,8 +506,8 @@ $("#crashStart").addEventListener("click", () => {
 
   btn.textContent = "💰 Забрать";
   btn.classList.add("btn-danger");
-  btn.disabled = false;
   btn.classList.remove("btn-primary");
+  btn.disabled = false;
 
   const onCash = () => {
     if (cashed) return;
@@ -462,9 +518,9 @@ $("#crashStart").addEventListener("click", () => {
     recordResult("crash", bet, win);
     toast(`Забрал на x${mult.toFixed(2)} · +${fmt(win)}`, "win");
     haptic("win");
-    if (mult >= 5) confettiBurst(80);
   };
-  btn.onclick = onCash;
+  crashHandler = onCash;
+  btn.addEventListener("click", onCash);
 
   function frame(now) {
     const t = (now - start) / 1000;
@@ -482,57 +538,43 @@ $("#crashStart").addEventListener("click", () => {
         toast(`Упал на x${target.toFixed(2)}`, "lose");
       }
       crashAnim = null;
-      btn.onclick = null;
-      btn.textContent = "🚀 Старт";
-      btn.classList.remove("btn-danger");
-      btn.classList.add("btn-primary");
-      btn.addEventListener("click", arguments.callee, { once: true }); // no-op safety
-      btn.disabled = false;
-      // restore default handler
-      setTimeout(() => {
-        rocketEl.textContent = "🚀";
-        rocketEl.style.transform = "translate(0,0)";
-      }, 1200);
+      btn.removeEventListener("click", onCash);
+      crashHandler = null;
+      setTimeout(resetCrashUI, 1200);
       return;
     }
     multEl.textContent = mult.toFixed(2) + "x";
-    // rocket parametric
     const dx = Math.min(280, t * 60);
     const dy = -Math.min(180, t * 40);
     rocketEl.style.transform = `translate(${dx}px, ${dy}px) rotate(-30deg)`;
     crashAnim = requestAnimationFrame(frame);
   }
   crashAnim = requestAnimationFrame(frame);
-});
+}
 
+resetCrashUI();
 function renderCrashHistory() {
   const c = $("#crashHistory");
   c.innerHTML = crashHistory.map(v =>
     `<span class="crash-h-item ${v >= 2 ? "high" : "low"}">x${v.toFixed(2)}</span>`
   ).join("");
 }
-
-// reset crash button on close
 $("#screen-crash [data-close]").addEventListener("click", () => {
   if (crashAnim) cancelAnimationFrame(crashAnim);
   crashAnim = null;
-  const btn = $("#crashStart");
-  btn.textContent = "🚀 Старт"; btn.classList.remove("btn-danger"); btn.classList.add("btn-primary");
-  btn.onclick = null; btn.disabled = false;
-  $("#crashMult").textContent = "1.00x"; $("#crashMult").classList.remove("crashed");
-  $("#crashRocket").textContent = "🚀"; $("#crashRocket").style.transform = "";
+  resetCrashUI();
 });
 
-// ---------- MINES ----------
+// ---------- MINES (RTP 88% вместо 96%) ----------
 const minesState = { active: false, bet: 0, bombs: 5, opened: 0, mult: 1, bombSet: null, finished: false };
 const MINES_TOTAL = 25;
 
 function minesPayout(open, bombs) {
-  // RTP ~96% по формуле гипергеометрии
+  // RTP ~88%
   const safe = MINES_TOTAL - bombs;
   let p = 1;
   for (let i = 0; i < open; i++) p *= (safe - i) / (MINES_TOTAL - i);
-  return p > 0 ? 0.96 / p : 0;
+  return p > 0 ? 0.88 / p : 0;
 }
 function buildMinesGrid() {
   const grid = $("#minesGrid");
@@ -550,7 +592,6 @@ function onMineClick(i, cell) {
   if (minesState.bombSet.has(i)) {
     cell.classList.add("bomb", "opened");
     cell.textContent = "💣";
-    // показать остальные
     minesState.bombSet.forEach(b => {
       if (b !== i) {
         const c = $(`.mine-cell[data-i="${b}"]`);
@@ -604,7 +645,6 @@ $("#minesCashout").addEventListener("click", () => {
   recordResult("mines", minesState.bet, win);
   toast(`Забрал +${fmt(win)} (${minesState.mult.toFixed(2)}x)`, "win");
   haptic("win");
-  if (minesState.mult >= 3) confettiBurst(80);
   $$("#minesGrid .mine-cell").forEach(c => c.classList.add("disabled"));
   minesState.active = false;
   $("#minesCashout").style.display = "none";
@@ -612,23 +652,22 @@ $("#minesCashout").addEventListener("click", () => {
 });
 buildMinesGrid();
 
-// ---------- WHEEL OF FORTUNE ----------
+// ---------- WHEEL OF FORTUNE (нерф: больше zero-секторов) ----------
 const WHEEL_SEGS = [
   { mult: 0,    color: "#444",    label: "x0" },
-  { mult: 1.5,  color: "#3b82f6", label: "x1.5" },
+  { mult: 1.2,  color: "#3b82f6", label: "x1.2" },
   { mult: 0,    color: "#444",    label: "x0" },
-  { mult: 2,    color: "#22c55e", label: "x2" },
-  { mult: 0.5,  color: "#dc2626", label: "x0.5" },
-  { mult: 3,    color: "#a855f7", label: "x3" },
+  { mult: 1.5,  color: "#22c55e", label: "x1.5" },
+  { mult: 0,    color: "#dc2626", label: "x0" },
+  { mult: 2,    color: "#a855f7", label: "x2" },
   { mult: 0,    color: "#444",    label: "x0" },
-  { mult: 10,   color: "#ffd966", label: "x10" },
+  { mult: 5,    color: "#ffd966", label: "x5" },
 ];
 function buildWheel() {
   const w = $("#luckyWheel");
   w.innerHTML = "";
   const n = WHEEL_SEGS.length;
   const seg = 360 / n;
-  // создаём SVG для сегментов — проще, чем CSS conic
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("viewBox", "-1 -1 2 2");
@@ -636,7 +675,7 @@ function buildWheel() {
   svg.style.inset = 0;
   svg.style.width = "100%";
   svg.style.height = "100%";
-  svg.style.transform = "rotate(-90deg)"; // 0° по верху
+  svg.style.transform = "rotate(-90deg)";
   for (let i = 0; i < n; i++) {
     const a0 = (i * seg) * Math.PI / 180;
     const a1 = ((i + 1) * seg) * Math.PI / 180;
@@ -659,7 +698,7 @@ function buildWheel() {
     text.setAttribute("fill", "#fff");
     text.setAttribute("font-weight", "900");
     text.setAttribute("font-size", "0.16");
-    text.setAttribute("style", "text-shadow: 0 1px 2px rgba(0,0,0,0.7); paint-order: stroke; stroke: rgba(0,0,0,0.7); stroke-width: 0.01;");
+    text.setAttribute("style", "paint-order: stroke; stroke: rgba(0,0,0,0.7); stroke-width: 0.01;");
     text.textContent = WHEEL_SEGS[i].label;
     svg.appendChild(text);
   }
@@ -676,14 +715,13 @@ $("#wheelSpin").addEventListener("click", () => {
   adjustBalance(-bet);
   haptic("light");
 
-  // вес: x0=20%, x0.5=15%, x1.5=20%, x2=15%, x3=10%, x10=5%, остальные x0
-  const weights = [25, 15, 20, 12, 8, 8, 7, 5];
+  // нерф: x5 теперь 3%, x0 чаще
+  const weights = [32, 14, 22, 10, 12, 5, 2, 3];
   let r = Math.random() * weights.reduce((a,b)=>a+b);
   let idx = 0;
   for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idx = i; break; } }
 
   const segDeg = 360 / WHEEL_SEGS.length;
-  // указатель сверху, мы хотим idx-й сегмент под указателем
   const target = -(idx * segDeg + segDeg / 2);
   wheelRotation += 360 * 6 + (target - (wheelRotation % 360));
   $("#luckyWheel").style.transform = `rotate(${wheelRotation}deg)`;
@@ -698,7 +736,6 @@ $("#wheelSpin").addEventListener("click", () => {
       $("#wheelResult").innerHTML = `🎉 <b>${seg.label}</b> · +${fmt(win)}`;
       toast("+" + fmt(win), "win");
       haptic("win");
-      if (seg.mult >= 3) confettiBurst(80);
     } else {
       $("#wheelResult").innerHTML = `<span style="color:var(--red)">${seg.label}</span> мимо`;
       haptic("lose");
@@ -708,7 +745,7 @@ $("#wheelSpin").addEventListener("click", () => {
   }, 5100);
 });
 
-// ---------- COINFLIP ----------
+// ---------- COINFLIP (нерф: x1.9 вместо x2) ----------
 let cfChoice = "heads";
 $$("[data-cf]").forEach(b => b.addEventListener("click", () => {
   $$("[data-cf]").forEach(x => x.classList.remove("selected"));
@@ -732,7 +769,7 @@ $("#cfFlip").addEventListener("click", () => {
     coin.textContent = result === "heads" ? "🦅" : "$";
     let win = 0;
     if (result === cfChoice) {
-      win = bet * 2;
+      win = Math.floor(bet * 1.9);  // 5% house edge
       if (state.upgrades.vault > 0) win = Math.floor(win * (1 + 0.05 * state.upgrades.vault));
       adjustBalance(win);
       toast(`+${fmt(win)} · ${result === "heads" ? "Орёл" : "Решка"}`, "win");
@@ -746,49 +783,95 @@ $("#cfFlip").addEventListener("click", () => {
   }, 1700);
 });
 
-// ---------- CASES ----------
+// ============================================================
+// 📦 КЕЙСЫ — больше тиров, multi-open, инвентарь стекается
+// ============================================================
+// EV каждого кейса ~85% от цены: суммарно вы в минус идёте
+const RARITY_TIER = { common: 1, rare: 2, epic: 3, legend: 4, myth: 5 };
+
 const CASES = [
-  { id: "bronze", name: "Бронза", icon: "📦", price: 100, tier: "bronze",
+  { id: "bronze", name: "Бронзовый", icon: "📦", price: 100, tier: "bronze",
     items: [
-      { ico: "🍂", name: "Лист", v: 50,    rarity: "common", w: 50 },
-      { ico: "🪵", name: "Палка", v: 100,  rarity: "common", w: 28 },
-      { ico: "🔧", name: "Гайка", v: 200,  rarity: "rare",   w: 12 },
-      { ico: "⚙️", name: "Шестерня", v: 400, rarity: "rare", w: 6 },
-      { ico: "🪙", name: "Монета", v: 800, rarity: "epic",  w: 3 },
-      { ico: "💍", name: "Кольцо", v: 2000, rarity: "legend", w: 0.9 },
-      { ico: "👑", name: "Корона", v: 10000, rarity: "myth", w: 0.1 },
+      { ico: "🍂", name: "Лист", v: 30,    rarity: "common", w: 55 },
+      { ico: "🪵", name: "Палка", v: 60,   rarity: "common", w: 28 },
+      { ico: "🔧", name: "Гайка", v: 130,  rarity: "rare",   w: 12 },
+      { ico: "⚙️", name: "Шестерня", v: 280, rarity: "rare", w: 4 },
+      { ico: "🪙", name: "Монета", v: 600, rarity: "epic",   w: 0.9 },
+      { ico: "💍", name: "Кольцо", v: 1500, rarity: "legend", w: 0.1 },
     ]},
-  { id: "silver", name: "Серебро", icon: "🎁", price: 500, tier: "silver",
+  { id: "silver", name: "Серебряный", icon: "🎁", price: 500, tier: "silver",
     items: [
-      { ico: "🥉", name: "Бронза", v: 200,   rarity: "common", w: 35 },
-      { ico: "🥈", name: "Серебро", v: 600,  rarity: "rare",   w: 30 },
-      { ico: "🪄", name: "Палочка", v: 1200, rarity: "rare",   w: 15 },
-      { ico: "💎", name: "Алмазик", v: 2500, rarity: "epic",   w: 12 },
-      { ico: "🗡️", name: "Меч", v: 5000,    rarity: "legend", w: 6 },
-      { ico: "🛡️", name: "Щит", v: 12000,   rarity: "legend", w: 1.5 },
-      { ico: "🌟", name: "Звезда", v: 30000, rarity: "myth",   w: 0.5 },
+      { ico: "🥉", name: "Бронза", v: 150,   rarity: "common", w: 38 },
+      { ico: "🥈", name: "Серебро", v: 380,  rarity: "rare",   w: 32 },
+      { ico: "🪄", name: "Палочка", v: 750,  rarity: "rare",   w: 18 },
+      { ico: "💎", name: "Алмазик", v: 1500, rarity: "epic",   w: 9 },
+      { ico: "🗡️", name: "Меч", v: 3000,    rarity: "legend", w: 2.5 },
+      { ico: "🌟", name: "Звезда", v: 9000,  rarity: "myth",   w: 0.5 },
     ]},
-  { id: "gold", name: "Золото", icon: "🏆", price: 2000, tier: "gold",
+  { id: "emerald", name: "Изумрудный", icon: "🍀", price: 1500, tier: "silver",
     items: [
-      { ico: "🥇", name: "Медаль", v: 800,    rarity: "common", w: 25 },
-      { ico: "💰", name: "Мешок", v: 2000,    rarity: "rare",   w: 30 },
-      { ico: "💎", name: "Алмаз", v: 5000,    rarity: "epic",   w: 22 },
-      { ico: "👑", name: "Корона", v: 12000,  rarity: "epic",   w: 12 },
-      { ico: "🐉", name: "Дракон", v: 30000,  rarity: "legend", w: 7 },
-      { ico: "🦄", name: "Единорог", v: 75000, rarity: "myth",  w: 3 },
-      { ico: "🌌", name: "Галактика", v: 200000, rarity: "myth", w: 1 },
+      { ico: "🌿", name: "Веточка", v: 500,    rarity: "common", w: 35 },
+      { ico: "🍃", name: "Листва", v: 1100,    rarity: "rare",   w: 30 },
+      { ico: "🥦", name: "Кустик", v: 2000,    rarity: "rare",   w: 18 },
+      { ico: "🌳", name: "Дерево", v: 4500,    rarity: "epic",   w: 12 },
+      { ico: "🦗", name: "Кузнечик", v: 9000,  rarity: "legend", w: 4 },
+      { ico: "🐍", name: "Изумрудный змей", v: 25000, rarity: "myth", w: 1 },
     ]},
-  { id: "diamond", name: "Алмазный", icon: "💎", price: 10000, tier: "diamond",
+  { id: "gold", name: "Золотой", icon: "🏆", price: 5000, tier: "gold",
     items: [
-      { ico: "💎", name: "Алмазный осколок", v: 5000,  rarity: "common", w: 25 },
-      { ico: "🔮", name: "Сфера", v: 15000,             rarity: "rare",   w: 30 },
-      { ico: "👑", name: "Корона эпик", v: 35000,       rarity: "epic",   w: 22 },
-      { ico: "🐲", name: "Тёмный дракон", v: 80000,    rarity: "legend", w: 12 },
-      { ico: "🦄", name: "Звёздный единорог", v: 200000, rarity: "myth", w: 7 },
-      { ico: "🌟", name: "Сверхновая", v: 500000,       rarity: "myth",   w: 3 },
-      { ico: "👽", name: "Космос", v: 1500000,          rarity: "myth",   w: 1 },
+      { ico: "🥇", name: "Медаль", v: 1800,    rarity: "common", w: 30 },
+      { ico: "💰", name: "Мешок", v: 4200,     rarity: "rare",   w: 32 },
+      { ico: "💎", name: "Алмаз", v: 9000,     rarity: "epic",   w: 22 },
+      { ico: "👑", name: "Корона", v: 22000,   rarity: "epic",   w: 11 },
+      { ico: "🐉", name: "Дракон", v: 55000,   rarity: "legend", w: 4 },
+      { ico: "🦄", name: "Единорог", v: 150000, rarity: "myth",  w: 1 },
+    ]},
+  { id: "ruby", name: "Рубиновый", icon: "❤️‍🔥", price: 10000, tier: "gold",
+    items: [
+      { ico: "🔥", name: "Огонёк", v: 4000,    rarity: "common", w: 30 },
+      { ico: "🌶️", name: "Перчик", v: 9500,    rarity: "rare",   w: 32 },
+      { ico: "🍷", name: "Бокал", v: 18000,    rarity: "epic",   w: 22 },
+      { ico: "💋", name: "Поцелуй", v: 42000,  rarity: "epic",   w: 11 },
+      { ico: "🐲", name: "Огнедышащий", v: 110000, rarity: "legend", w: 4 },
+      { ico: "🌋", name: "Вулкан", v: 320000,  rarity: "myth",   w: 1 },
+    ]},
+  { id: "sapphire", name: "Сапфировый", icon: "💙", price: 25000, tier: "diamond",
+    items: [
+      { ico: "💧", name: "Капля", v: 10000,    rarity: "common", w: 30 },
+      { ico: "🐬", name: "Дельфин", v: 24000,  rarity: "rare",   w: 32 },
+      { ico: "🐳", name: "Кит", v: 50000,      rarity: "epic",   w: 22 },
+      { ico: "🌊", name: "Цунами", v: 120000,  rarity: "epic",   w: 11 },
+      { ico: "🧜", name: "Русалка", v: 320000, rarity: "legend", w: 4 },
+      { ico: "👁️", name: "Око глубин", v: 900000, rarity: "myth", w: 1 },
+    ]},
+  { id: "diamond", name: "Алмазный", icon: "💎", price: 50000, tier: "diamond",
+    items: [
+      { ico: "💎", name: "Осколок", v: 20000,         rarity: "common", w: 30 },
+      { ico: "🔮", name: "Сфера", v: 50000,            rarity: "rare",   w: 32 },
+      { ico: "👑", name: "Корона эпик", v: 110000,     rarity: "epic",   w: 22 },
+      { ico: "🐲", name: "Тёмный дракон", v: 280000,   rarity: "epic",   w: 11 },
+      { ico: "🦄", name: "Звёздный единорог", v: 700000, rarity: "legend", w: 4 },
+      { ico: "🌟", name: "Сверхновая", v: 1800000,     rarity: "myth",   w: 1 },
+    ]},
+  { id: "mythic", name: "Мифический", icon: "🌌", price: 200000, tier: "diamond",
+    items: [
+      { ico: "🪐", name: "Планета", v: 80000,       rarity: "common", w: 30 },
+      { ico: "☄️", name: "Комета", v: 200000,       rarity: "rare",   w: 32 },
+      { ico: "🌠", name: "Падающая звезда", v: 460000, rarity: "epic", w: 22 },
+      { ico: "🌌", name: "Туманность", v: 1100000,  rarity: "epic",   w: 11 },
+      { ico: "👽", name: "Космический", v: 2800000, rarity: "legend", w: 4 },
+      { ico: "🛸", name: "НЛО джекпот", v: 7500000, rarity: "myth",   w: 1 },
     ]},
 ];
+
+let invFilter = "all";
+$$(".inv-tab").forEach(b => b.addEventListener("click", () => {
+  $$(".inv-tab").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  invFilter = b.dataset.invTab;
+  renderInventory();
+  haptic("light");
+}));
 
 function renderCases() {
   const list = $("#caseList");
@@ -806,30 +889,56 @@ function renderCases() {
   renderInventory();
 }
 
+function inventoryFiltered() {
+  if (invFilter === "all") return state.inventory;
+  if (invFilter === "common") return state.inventory.filter(x => x.rarity === "common");
+  if (invFilter === "rare") return state.inventory.filter(x => RARITY_TIER[x.rarity] >= 2);
+  if (invFilter === "legend") return state.inventory.filter(x => RARITY_TIER[x.rarity] >= 4);
+  return state.inventory;
+}
+
 function renderInventory() {
   const inv = $("#invGrid");
   inv.innerHTML = "";
-  if (state.inventory.length === 0) {
+  const items = inventoryFiltered().slice().sort((a, b) =>
+    (RARITY_TIER[b.rarity] || 0) - (RARITY_TIER[a.rarity] || 0) || b.v - a.v
+  );
+  if (items.length === 0) {
     inv.innerHTML = `<div class="inv-empty" style="grid-column: span 4;">Пусто. Открой кейс!</div>`;
     return;
   }
-  // последние 24
-  const items = state.inventory.slice(-24).reverse();
   for (const it of items) {
     const el = document.createElement("div");
     el.className = "inv-item";
-    el.innerHTML = `<div>${it.ico}</div><div class="v">${fmt(it.v)}</div>`;
+    el.innerHTML = `
+      ${(it.qty || 1) > 1 ? `<span class="stack">x${it.qty}</span>` : ""}
+      <div>${it.ico}</div>
+      <div class="v">${fmt(it.v)}</div>`;
     el.title = it.name;
+    el.addEventListener("click", () => openItemView(it));
     inv.appendChild(el);
   }
 }
 
+// ---------- открытие кейса с multi ----------
 let currentCase = null;
+let currentMulti = 1;
+$$(".case-multi .multi-btn").forEach(b => {
+  b.addEventListener("click", () => {
+    $$(".case-multi .multi-btn").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    currentMulti = parseInt(b.dataset.multi, 10);
+    if (currentCase) {
+      $("#caseOpenBtn").textContent = `📦 Открыть x${currentMulti} · ${fmt(currentCase.price * currentMulti)} 🪙`;
+    }
+    haptic("light");
+  });
+});
+
 function openCase(c) {
   currentCase = c;
   $("#caseTitle").textContent = c.icon + " " + c.name;
 
-  // paytable
   const pay = $("#casePaytable");
   pay.innerHTML = "<div style='font-weight:700; margin-bottom:6px;'>Призы:</div>" +
     c.items.map(it => `
@@ -839,86 +948,362 @@ function openCase(c) {
         <div class="pay">${fmt(it.v)} 🪙</div>
       </div>`).join("");
 
-  // strip
   const strip = $("#caseRollStrip");
   strip.style.transition = "none";
   strip.style.transform = "translateX(0)";
   strip.innerHTML = "";
 
-  // empty result
   $("#caseResultBox").innerHTML = "";
+  $("#caseRoll").style.display = "block";
 
-  // configure button
   const btn = $("#caseOpenBtn");
-  btn.textContent = `📦 Открыть · ${fmt(c.price)} 🪙`;
+  btn.textContent = `📦 Открыть x${currentMulti} · ${fmt(c.price * currentMulti)} 🪙`;
   btn.disabled = false;
-  btn.onclick = () => doOpenCase(c);
+  btn.onclick = () => doOpenCase(c, currentMulti);
 
   openScreen("case");
 }
 
-function doOpenCase(c) {
+async function doOpenCase(c, multi) {
+  const totalCost = c.price * multi;
+  if (state.balance < totalCost) { toast("Не хватает", "lose"); return; }
+
   const btn = $("#caseOpenBtn");
-  if (state.balance < c.price) { toast("Не хватает", "lose"); return; }
-  adjustBalance(-c.price);
   btn.disabled = true;
+  adjustBalance(-totalCost);
   haptic("light");
 
-  // выбираем приз заранее
-  const won = pickWeighted(c.items);
+  if (multi === 1) {
+    // классическая анимация ленты
+    $("#caseRoll").style.display = "block";
+    $("#caseResultBox").innerHTML = "";
 
-  // строим ленту
-  const strip = $("#caseRollStrip");
-  const itemW = 90;
-  const total = 60;
-  const winIndex = 50; // куда приземлится курсор
-  const items = [];
-  for (let i = 0; i < total; i++) {
-    if (i === winIndex) items.push(won);
-    else items.push(pickWeighted(c.items));
+    const won = pickWeighted(c.items);
+    const itemW = 90;
+    const total = 60;
+    const winIndex = 50;
+    const items = [];
+    for (let i = 0; i < total; i++) {
+      items.push(i === winIndex ? won : pickWeighted(c.items));
+    }
+    const strip = $("#caseRollStrip");
+    strip.innerHTML = items.map(it => `
+      <div class="case-roll-item r-${it.rarity}">
+        <div>${it.ico}</div>
+        <div class="v">${fmt(it.v)}</div>
+      </div>`).join("");
+    const containerW = $(".case-roll").clientWidth;
+    const offset = winIndex * itemW + itemW / 2 - containerW / 2 + (Math.random() - 0.5) * 30;
+    strip.style.transition = "none";
+    strip.style.transform = "translateX(0)";
+    void strip.offsetWidth;
+    strip.style.transition = "transform 5s cubic-bezier(0.1, 0.7, 0.2, 1)";
+    strip.style.transform = `translateX(${-offset}px)`;
+
+    setTimeout(() => {
+      let prize = won.v;
+      if (state.upgrades.vault > 0) prize = Math.floor(prize * (1 + 0.05 * state.upgrades.vault));
+      // в инвентарь добавляется ИМЕННО предмет, не деньги
+      invAdd({ ico: won.ico, name: won.name, v: prize, rarity: won.rarity });
+      state.stats.casesOpened++;
+      // EV-логика: запишем как «потратил price, получил prize стоимости»
+      state.stats.totalWagered += c.price;
+      state.stats.totalWon += prize;
+      state.stats.spins++;
+      if (prize >= c.price) state.stats.wins++; else state.stats.losses++;
+      if (prize > state.stats.biggestWin) state.stats.biggestWin = prize;
+      save();
+
+      $("#caseResultBox").innerHTML = `
+        <div class="case-result r-${won.rarity}">
+          <div class="ico">${won.ico}</div>
+          <div class="v">${won.name} · ${fmt(prize)} 🪙</div>
+          <div style="font-size:11px; color: var(--text-dim); margin-top:4px;">Добавлено в инвентарь</div>
+        </div>`;
+
+      if (prize >= c.price * 5 && prize >= 5000) showBigWin(prize, `${c.icon} ${c.name}`, { ico: won.ico, title: "Редкий дроп!" });
+      if (prize >= c.price * 5) confettiBurst(120);
+      if (prize >= c.price) { toast("Победа +" + fmt(prize), "win"); haptic("win"); }
+      else { toast(`Выпал ${won.name} (${fmt(prize)})`, "info"); haptic("warn"); }
+
+      btn.textContent = `🔄 Ещё раз x${currentMulti} · ${fmt(c.price * currentMulti)} 🪙`;
+      btn.disabled = false;
+    }, 5100);
+    return;
   }
-  strip.innerHTML = items.map(it => `
-    <div class="case-roll-item r-${it.rarity}">
-      <div>${it.ico}</div>
-      <div class="v">${fmt(it.v)}</div>
-    </div>`).join("");
 
-  // позиция: маркер в центре экрана; смещаем strip так,
-  // чтобы winIndex-й item оказался под маркером
-  const screenW = $("#screen-case .screen-body").clientWidth - 32; // padding
-  const containerW = $(".case-roll").clientWidth;
-  const offset = winIndex * itemW + itemW / 2 - containerW / 2 + (Math.random() - 0.5) * 30;
+  // multi: x5 / x10 — анимация лент по очереди очень долгая. Делаем мульти-грид с pop'ом.
+  $("#caseRoll").style.display = "none";
+  $("#caseResultBox").innerHTML = "";
 
-  strip.style.transition = "none";
-  strip.style.transform = "translateX(0)";
-  void strip.offsetWidth;
-  strip.style.transition = "transform 5s cubic-bezier(0.1, 0.7, 0.2, 1)";
-  strip.style.transform = `translateX(${-offset}px)`;
+  const wonList = [];
+  for (let i = 0; i < multi; i++) wonList.push(pickWeighted(c.items));
 
-  setTimeout(() => {
-    // показываем результат
-    let prize = won.v;
+  const grid = document.createElement("div");
+  grid.className = "multi-result-grid";
+  $("#caseResultBox").appendChild(grid);
+
+  let totalPrize = 0;
+  let bestRarity = "common";
+  for (let i = 0; i < wonList.length; i++) {
+    const it = wonList[i];
+    let prize = it.v;
     if (state.upgrades.vault > 0) prize = Math.floor(prize * (1 + 0.05 * state.upgrades.vault));
-    adjustBalance(prize);
-    state.inventory.push({ ico: won.ico, name: won.name, v: prize });
+    totalPrize += prize;
+    if (RARITY_TIER[it.rarity] > RARITY_TIER[bestRarity]) bestRarity = it.rarity;
+
+    invAdd({ ico: it.ico, name: it.name, v: prize, rarity: it.rarity });
     state.stats.casesOpened++;
-    recordResult("case_" + c.id, c.price, prize);
-    save();
 
-    $("#caseResultBox").innerHTML = `
-      <div class="case-result r-${won.rarity}">
-        <div class="ico">${won.ico}</div>
-        <div class="v" style="color: var(--gold);">+${fmt(prize)} · ${won.name}</div>
-      </div>`;
+    // в течение анимации показываем по одному
+    await new Promise(res => {
+      setTimeout(() => {
+        const el = document.createElement("div");
+        el.className = "multi-item r-" + it.rarity;
+        el.innerHTML = `<div>${it.ico}</div><div class="v">${fmt(prize)}</div>`;
+        el.style.animationDelay = "0s";
+        grid.appendChild(el);
+        haptic("light");
+        res();
+      }, 250);
+    });
+  }
 
-    if (prize >= c.price * 5) confettiBurst(120);
-    if (prize >= c.price) { toast("Победа +" + fmt(prize), "win"); haptic("win"); }
-    else { toast(`Выпал ${won.name} (${fmt(prize)})`, "info"); haptic("warn"); }
+  // запишем суммарные статы
+  state.stats.totalWagered += c.price * multi;
+  state.stats.totalWon += totalPrize;
+  state.stats.spins += multi;
+  if (totalPrize > state.stats.biggestWin) state.stats.biggestWin = totalPrize;
+  save();
 
-    btn.textContent = `🔄 Ещё раз · ${fmt(c.price)} 🪙`;
-    btn.disabled = false;
-  }, 5100);
+  // итог
+  const summary = document.createElement("div");
+  summary.className = "result-banner " + (totalPrize >= totalCost ? "win" : "lose");
+  summary.innerHTML = `Открыто: x${multi} · Потрачено: ${fmt(totalCost)} · Получено: ${fmt(totalPrize)}`;
+  $("#caseResultBox").appendChild(summary);
+
+  if (totalPrize >= totalCost * 2 && totalPrize >= 10000) {
+    showBigWin(totalPrize, `${c.icon} ${c.name} x${multi}`, { ico: "🎁", title: "Удачное вскрытие!" });
+  } else if (totalPrize >= totalCost) {
+    toast("В плюсе +" + fmt(totalPrize - totalCost), "win");
+    haptic("win");
+  } else {
+    toast(`В минусе −${fmt(totalCost - totalPrize)}`, "lose");
+    haptic("lose");
+  }
+
+  btn.textContent = `🔄 Ещё раз x${currentMulti} · ${fmt(c.price * currentMulti)} 🪙`;
+  btn.disabled = false;
 }
+
+// ============================================================
+// 🎒 Просмотр предмета — продать/оставить
+// ============================================================
+let currentItem = null;
+function openItemView(it) {
+  currentItem = it;
+  $("#itemTitle").textContent = it.name;
+  $("#itemBox").innerHTML = `
+    <div style="font-size: 80px;">${it.ico}</div>
+    <div style="font-weight:800; font-size:20px; margin-top: 8px;" class="r-${it.rarity}">${it.name}</div>
+    <div style="color: var(--gold); font-weight:800; font-size: 22px; margin-top: 4px;">${fmt(it.v)} 🪙</div>
+    <div style="color: var(--text-dim); font-size: 13px; margin-top: 4px;">У тебя: <b>${it.qty || 1}</b> шт.</div>
+    <div style="color: var(--text-dim); font-size: 11px; text-transform: uppercase; margin-top: 6px;">${it.rarity}</div>
+  `;
+  const oneBtn = $("#itemSellOne");
+  const allBtn = $("#itemSellAll");
+  oneBtn.textContent = `Продать 1 за ${fmt(it.v)}`;
+  allBtn.textContent = `Продать все (${it.qty || 1}) за ${fmt(it.v * (it.qty || 1))}`;
+  allBtn.style.display = (it.qty || 1) > 1 ? "block" : "none";
+  openScreen("item");
+}
+$("#itemSellOne").addEventListener("click", () => {
+  if (!currentItem) return;
+  invRemove(currentItem, 1);
+  adjustBalance(currentItem.v);
+  toast(`Продано: ${currentItem.name} +${fmt(currentItem.v)}`, "win");
+  haptic("medium");
+  if (invTotalQty(currentItem) === 0) closeScreen();
+  else openItemView({ ...currentItem, qty: invTotalQty(currentItem) });
+  renderInventory();
+});
+$("#itemSellAll").addEventListener("click", () => {
+  if (!currentItem) return;
+  const qty = invTotalQty(currentItem);
+  const total = currentItem.v * qty;
+  invRemove(currentItem, qty);
+  adjustBalance(total);
+  toast(`Продано: ${qty}x ${currentItem.name} +${fmt(total)}`, "win");
+  haptic("medium");
+  closeScreen();
+  renderInventory();
+});
+
+// ============================================================
+// 🔧 КОНТРАКТ — 5 предметов одной редкости -> 1 предмет на тир выше
+// ============================================================
+const RARITY_ORDER = ["common", "rare", "epic", "legend", "myth"];
+let contractSelection = []; // массив {key, item}
+
+$("#openContractBtn").addEventListener("click", () => {
+  contractSelection = [];
+  renderContractSlots();
+  renderContractPick();
+  renderContractStats();
+  $("#contractRunBtn").disabled = true;
+  $("#contractRunBtn").textContent = "Выбери 5 предметов";
+  openScreen("contract");
+});
+
+function renderContractSlots() {
+  const slots = $("#contractSlots");
+  slots.innerHTML = "";
+  for (let i = 0; i < 5; i++) {
+    const it = contractSelection[i]?.item;
+    const div = document.createElement("div");
+    div.className = "contract-slot " + (it ? "filled r-" + it.rarity : "");
+    div.style.position = "relative";
+    if (it) {
+      div.innerHTML = `${it.ico}<div class="v" style="position:absolute; bottom:2px; font-size:9px; color: var(--gold); font-weight:700;">${fmt(it.v)}</div>`;
+      div.addEventListener("click", () => {
+        contractSelection.splice(i, 1);
+        renderContractSlots();
+        renderContractPick();
+        renderContractStats();
+        haptic("light");
+      });
+    } else {
+      div.textContent = "+";
+    }
+    slots.appendChild(div);
+  }
+}
+
+function renderContractPick() {
+  const pick = $("#contractPick");
+  pick.innerHTML = "";
+  // фильтруем: можно брать только если не максимальная редкость, и только одной редкости в одном контракте
+  const lockedRarity = contractSelection[0]?.item?.rarity;
+  // считаем сколько уже выделено по каждому ключу
+  const usedCount = new Map();
+  for (const sel of contractSelection) {
+    usedCount.set(sel.key, (usedCount.get(sel.key) || 0) + 1);
+  }
+
+  const items = state.inventory
+    .filter(it => it.rarity !== "myth")
+    .filter(it => !lockedRarity || it.rarity === lockedRarity)
+    .slice()
+    .sort((a,b) => RARITY_TIER[b.rarity] - RARITY_TIER[a.rarity] || b.v - a.v);
+
+  if (items.length === 0) {
+    pick.innerHTML = `<div class="inv-empty" style="grid-column: span 4;">Нет подходящих предметов.<br>Нужны не-мифические одной редкости.</div>`;
+    return;
+  }
+
+  for (const it of items) {
+    const used = usedCount.get(invKey(it)) || 0;
+    const available = (it.qty || 1) - used;
+    if (available <= 0) continue;
+    const el = document.createElement("div");
+    el.className = "inv-item";
+    el.innerHTML = `
+      ${available > 1 ? `<span class="stack">x${available}</span>` : ""}
+      <div>${it.ico}</div>
+      <div class="v">${fmt(it.v)}</div>`;
+    el.addEventListener("click", () => {
+      if (contractSelection.length >= 5) { toast("Уже выбрано 5", "info"); return; }
+      contractSelection.push({ key: invKey(it), item: it });
+      renderContractSlots();
+      renderContractPick();
+      renderContractStats();
+      haptic("light");
+    });
+    pick.appendChild(el);
+  }
+}
+
+function renderContractStats() {
+  const stats = $("#contractStats");
+  if (contractSelection.length === 0) { stats.style.display = "none"; return; }
+  const items = contractSelection.map(s => s.item);
+  const total = items.reduce((a, b) => a + b.v, 0);
+  const avg = total / items.length;
+  const lockedRarity = items[0].rarity;
+  const nextRarity = RARITY_ORDER[Math.min(RARITY_ORDER.length - 1, RARITY_ORDER.indexOf(lockedRarity) + 1)];
+
+  stats.style.display = "block";
+  stats.innerHTML = `
+    <div class="row"><span>Сумма входа:</span><span class="v">${fmt(total)} 🪙</span></div>
+    <div class="row"><span>Средняя стоимость:</span><span class="v">${fmt(avg)} 🪙</span></div>
+    <div class="row"><span>Целевая редкость:</span><span class="v r-${nextRarity}">${nextRarity.toUpperCase()}</span></div>
+    <div class="row" style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">
+      <span>Результат: случайный предмет той редкости из всех кейсов с шансом получить редкий вариант с весом, пропорциональным средней цене входа.</span>
+    </div>
+  `;
+
+  const btn = $("#contractRunBtn");
+  if (contractSelection.length === 5) {
+    btn.disabled = false;
+    btn.textContent = `🔧 Запустить контракт (${nextRarity.toUpperCase()})`;
+  } else {
+    btn.disabled = true;
+    btn.textContent = `Выбери ещё ${5 - contractSelection.length}`;
+  }
+}
+
+// все возможные предметы из всех кейсов
+function allItemsByRarity(rarity) {
+  const out = [];
+  for (const c of CASES) {
+    for (const it of c.items) {
+      if (it.rarity === rarity) out.push(it);
+    }
+  }
+  return out;
+}
+
+$("#contractRunBtn").addEventListener("click", () => {
+  if (contractSelection.length !== 5) return;
+  const items = contractSelection.map(s => s.item);
+  const lockedRarity = items[0].rarity;
+  const nextRarity = RARITY_ORDER[Math.min(RARITY_ORDER.length - 1, RARITY_ORDER.indexOf(lockedRarity) + 1)];
+  const avg = items.reduce((a, b) => a + b.v, 0) / items.length;
+
+  // удалим из инвентаря
+  for (const sel of contractSelection) {
+    invRemove(sel.item, 1);
+  }
+  state.stats.contractsRun = (state.stats.contractsRun || 0) + 1;
+
+  // выбираем результат: предметы целевой редкости, вес = 1/abs(v - avg*X) ... простая логика:
+  // EV ~ 80% средней суммы входа, с дисперсией
+  let pool = allItemsByRarity(nextRarity);
+  if (pool.length === 0) pool = allItemsByRarity(lockedRarity); // fallback
+  // взвешиваем обратной квадратной разницей с целевой стоимостью
+  const target = avg * 4;  // 5 in -> 1 out стоит ~80% от 5x = 4x avg
+  const weighted = pool.map(it => ({ ...it, w: 1 / (1 + Math.pow((it.v - target) / Math.max(target, 1), 2)) }));
+  const result = pickWeighted(weighted);
+
+  invAdd({ ico: result.ico, name: result.name, v: result.v, rarity: result.rarity });
+  save();
+
+  // покажем результат
+  contractSelection = [];
+  renderContractSlots();
+  renderContractPick();
+  $("#contractStats").style.display = "none";
+  $("#contractRunBtn").disabled = true;
+  $("#contractRunBtn").textContent = "Выбери 5 предметов";
+
+  toast(`+ ${result.ico} ${result.name} (${fmt(result.v)})`, result.v >= avg * 5 ? "win" : "info");
+  showBigWin(result.v, `🔧 Контракт ${lockedRarity.toUpperCase()} → ${nextRarity.toUpperCase()}`, {
+    ico: result.ico,
+    title: result.v >= avg * 5 ? "Удача!" : "Готово",
+  });
+  haptic(result.v >= avg * 5 ? "win" : "medium");
+  renderInventory();
+});
 
 // ---------- PROFILE ----------
 function levelFromBalance(stats) {
@@ -945,10 +1330,10 @@ function renderProfile() {
     <div class="stat-tile"><div class="label">Винрейт</div><div class="value">${winrate}%</div></div>
     <div class="stat-tile"><div class="label">Самый большой выигрыш</div><div class="value" style="color:var(--gold);">${fmt(s.biggestWin)}</div></div>
     <div class="stat-tile"><div class="label">Кейсов открыто</div><div class="value">${fmt(s.casesOpened)}</div></div>
+    <div class="stat-tile"><div class="label">Контрактов</div><div class="value">${fmt(s.contractsRun || 0)}</div></div>
+    <div class="stat-tile"><div class="label">Тапов</div><div class="value">${fmt(state.taps)}</div></div>
     <div class="stat-tile"><div class="label">Всего поставлено</div><div class="value">${fmt(s.totalWagered)}</div></div>
     <div class="stat-tile"><div class="label">Всего выиграно</div><div class="value" style="color:var(--green);">${fmt(s.totalWon)}</div></div>
-    <div class="stat-tile"><div class="label">Тапов</div><div class="value">${fmt(state.taps)}</div></div>
-    <div class="stat-tile"><div class="label">Баланс</div><div class="value" style="color:var(--gold);">${fmt(state.balance)}</div></div>
   `;
 }
 

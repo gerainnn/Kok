@@ -74,10 +74,19 @@
     <!-- CASES -->
     <section class="page" data-page="cases">
       <div class="section-title">📦 Кейсы</div>
-      <div class="section-sub">Открой кейс и получи случайный приз</div>
+      <div class="section-sub">Открой кейс и получи случайный приз. Можно открывать сразу несколько.</div>
       <div class="case-list" id="caseList"></div>
 
       <div class="section-title" style="font-size:18px; margin-top: 24px;">🎒 Инвентарь</div>
+      <div class="inv-tabs">
+        <button class="inv-tab active" data-inv-tab="all">Все</button>
+        <button class="inv-tab" data-inv-tab="common">⚪ Common</button>
+        <button class="inv-tab" data-inv-tab="rare">🔵 Rare+</button>
+        <button class="inv-tab" data-inv-tab="legend">🟡 Legend+</button>
+      </div>
+      <button class="btn-primary" id="openContractBtn" style="margin-bottom: 10px;">
+        🔧 Контракт улучшения (5 → 1)
+      </button>
       <div class="inv-grid" id="invGrid"></div>
     </section>
 
@@ -322,13 +331,67 @@
     <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
   </div>
   <div class="screen-body">
-    <div class="case-roll">
+    <div class="case-roll" id="caseRoll">
       <div class="case-roll-marker"></div>
       <div class="case-roll-strip" id="caseRollStrip"></div>
     </div>
     <div id="caseResultBox"></div>
+
+    <div class="case-multi" id="caseMulti">
+      <button class="multi-btn active" data-multi="1">x1</button>
+      <button class="multi-btn" data-multi="5">x5</button>
+      <button class="multi-btn" data-multi="10">x10</button>
+    </div>
+
     <div class="case-paytable" id="casePaytable"></div>
     <button class="btn-primary" id="caseOpenBtn">📦 Открыть</button>
+  </div>
+</div>
+
+<!-- ITEM DETAILS -->
+<div class="screen" id="screen-item">
+  <div class="screen-header">
+    <button class="back-btn" data-close>‹</button>
+    <div class="title" id="itemTitle">Предмет</div>
+    <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
+  </div>
+  <div class="screen-body">
+    <div id="itemBox" style="text-align:center; padding: 20px;"></div>
+    <div class="item-actions">
+      <button class="keep-btn" data-close>Оставить</button>
+      <button class="sell-btn" id="itemSellOne">Продать 1</button>
+      <button class="sell-btn" id="itemSellAll">Продать все</button>
+    </div>
+  </div>
+</div>
+
+<!-- CONTRACT -->
+<div class="screen" id="screen-contract">
+  <div class="screen-header">
+    <button class="back-btn" data-close>‹</button>
+    <div class="title">🔧 Контракт улучшения</div>
+    <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
+  </div>
+  <div class="screen-body">
+    <div class="contract-info" id="contractInfo">
+      Выбери <b>5 предметов</b> одной редкости и получи 1 предмет на тир выше.
+    </div>
+    <div class="contract-slots" id="contractSlots"></div>
+    <div class="contract-info" id="contractStats" style="display:none;"></div>
+    <button class="btn-primary" id="contractRunBtn" disabled>Выбери 5 предметов</button>
+    <div style="font-weight:700; margin: 14px 0 8px;">Твой инвентарь:</div>
+    <div class="contract-pick" id="contractPick"></div>
+  </div>
+</div>
+
+<!-- BIG WIN MODAL (внутри приложения, не выкидывает!) -->
+<div class="modal-back" id="bigWinModal">
+  <div class="modal-card">
+    <div class="ico" id="bwIco">🎰</div>
+    <div class="ttl" id="bwTitle">Большой выигрыш!</div>
+    <div class="sub" id="bwSub">— игра —</div>
+    <div class="amount" id="bwAmount">+0 🪙</div>
+    <button class="btn-primary" id="bwClose">Класс! 🔥</button>
   </div>
 </div>
 
