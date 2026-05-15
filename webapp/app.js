@@ -1372,14 +1372,28 @@ renderCrashHistory();
 if (!state.arcade) {
   state.arcade = {
     soulShards: 0,                 // мета-валюта рогалика
-    metaUpgrades: { hp: 0, atk: 0, spd: 0, regen: 0, magnet: 0, luck: 0 },
+    metaUpgrades: { hp: 0, atk: 0, spd: 0, regen: 0, magnet: 0, luck: 0, skill: 0 },
     rogueBest: { depth: 0, kills: 0, time: 0 },
     best2048: 0,
     bestSnake: 0,
+    snakeBest: {},
   };
   save();
 }
-if (typeof state.arcade.bestSnake !== "number") { state.arcade.bestSnake = 0; save(); }
+{
+  let dirty = false;
+  const a = state.arcade;
+  if (typeof a.bestSnake !== "number") { a.bestSnake = 0; dirty = true; }
+  if (!a.snakeBest || typeof a.snakeBest !== "object") { a.snakeBest = {}; dirty = true; }
+  if (!a.metaUpgrades) { a.metaUpgrades = {}; dirty = true; }
+  for (const k of ["hp", "atk", "spd", "regen", "magnet", "luck", "skill"]) {
+    if (typeof a.metaUpgrades[k] !== "number") { a.metaUpgrades[k] = 0; dirty = true; }
+  }
+  if (!a.rogueBest) { a.rogueBest = { depth: 0, kills: 0, time: 0 }; dirty = true; }
+  if (typeof a.soulShards !== "number") { a.soulShards = 0; dirty = true; }
+  if (typeof a.best2048 !== "number") { a.best2048 = 0; dirty = true; }
+  if (dirty) save();
+}
 
 // ---------- bulk-sell ----------
 function bulkSell(mode) {
@@ -1629,12 +1643,13 @@ $("#itemUpgradeBtn").addEventListener("click", () => {
 });
 
 // ============================================================
-// РОГАЛИК — Подземелье
+// РОГАЛИК — Подземелье (v2: больше перков, активный скилл, фикс этажей, победный экран)
 // ============================================================
 const rogueRefs = {
   canvas: null, ctx: null, dpr: 1, W: 0, H: 0,
   arena: null, body: null,
   raf: null, last: 0, running: false,
+  inited: false,
 };
 
 const ROGUE = {
@@ -1645,7 +1660,8 @@ const ROGUE = {
   particles: [],
   popups: [],
   depth: 1,
-  killCount: 0,
+  killCount: 0,           // киллы на текущем этаже
+  totalKills: 0,          // киллы за весь забег
   spawnTimer: 0,
   spawnInterval: 1.5,
   bossActive: false,
@@ -1655,32 +1671,42 @@ const ROGUE = {
   startTime: 0,
   paused: false,
   joy: { active: false, dx: 0, dy: 0, len: 0 },
-  bg: [], // фон точек
+  bg: [],
+  victory: false,
+  floorAnnouncement: 0,
 };
 
+// pickup-перки
 const ROGUE_PERKS = [
-  { id: "atk",     name: "🗡️ Сила удара",   desc: "+25% урона",                    rarity: "common", apply: p => p.atk *= 1.25 },
-  { id: "spd",     name: "👟 Скорость",      desc: "+15% к скорости",               rarity: "common", apply: p => p.spd *= 1.15 },
-  { id: "rate",    name: "⚡ Скорость атаки", desc: "+20% к скорости атаки",         rarity: "common", apply: p => p.atkRate *= 1.20 },
-  { id: "range",   name: "🎯 Дальность",     desc: "+25% к радиусу атаки",          rarity: "common", apply: p => p.atkRange *= 1.25 },
-  { id: "hp",      name: "❤️ Витальность",   desc: "+20 макс. HP и +20 HP сейчас",  rarity: "common", apply: p => { p.hpMax += 20; p.hp = Math.min(p.hpMax, p.hp + 20); } },
-  { id: "regen",   name: "💚 Регенерация",   desc: "+1 HP/сек",                     rarity: "rare",   apply: p => p.regen += 1 },
-  { id: "multi",   name: "🌀 Двойной выстрел", desc: "Стреляешь по 2 врагам сразу", rarity: "rare",   apply: p => p.shotsPerTick += 1 },
-  { id: "pierce",  name: "🏹 Пронзание",     desc: "+1 цель пробивания снаряда",    rarity: "rare",   apply: p => p.pierce += 1 },
-  { id: "crit",    name: "✨ Крит",           desc: "+15% шанс крита (x2 урон)",     rarity: "rare",   apply: p => p.critChance += 0.15 },
-  { id: "magnet",  name: "🧲 Магнит",        desc: "+50% к радиусу подбора лута",   rarity: "rare",   apply: p => p.magnet *= 1.5 },
-  { id: "vamp",    name: "🩸 Вампиризм",     desc: "Лечишься на 5% от урона",       rarity: "epic",   apply: p => p.lifesteal += 0.05 },
-  { id: "shield",  name: "🛡️ Щит",          desc: "Раз в 8 сек блокируешь удар",   rarity: "epic",   apply: p => p.shieldCd = Math.max(2, p.shieldCd ? p.shieldCd - 2 : 8) },
-  { id: "boom",    name: "💥 Взрыв",        desc: "Снаряд взрывается по AoE",      rarity: "legend", apply: p => p.explode = (p.explode || 0) + 18 },
+  { id: "atk",     name: "🗡️ Сила удара",     desc: "+25% урона",                    rarity: "common", apply: p => p.atk *= 1.25 },
+  { id: "spd",     name: "👟 Скорость",        desc: "+15% к скорости движения",     rarity: "common", apply: p => p.spd *= 1.15 },
+  { id: "rate",    name: "⚡ Скорость атаки",  desc: "+20% к скорострельности",       rarity: "common", apply: p => p.atkRate *= 1.20 },
+  { id: "range",   name: "🎯 Дальность",       desc: "+25% к радиусу атаки",          rarity: "common", apply: p => p.atkRange *= 1.25 },
+  { id: "hp",      name: "❤️ Витальность",     desc: "+25 макс. HP и +25 HP сейчас", rarity: "common", apply: p => { p.hpMax += 25; p.hp = Math.min(p.hpMax, p.hp + 25); } },
+  { id: "bsize",   name: "🔮 Большие пули",    desc: "+50% размер и +20% урон снаряда", rarity: "common", apply: p => { p.bulletR *= 1.5; p.atk *= 1.2; } },
+  { id: "regen",   name: "💚 Регенерация",     desc: "+1 HP/сек",                     rarity: "rare",   apply: p => p.regen += 1 },
+  { id: "multi",   name: "🌀 Двойной выстрел", desc: "+1 цель за тик стрельбы",       rarity: "rare",   apply: p => p.shotsPerTick += 1 },
+  { id: "pierce",  name: "🏹 Пронзание",       desc: "+1 цель пробивания снаряда",    rarity: "rare",   apply: p => p.pierce += 1 },
+  { id: "crit",    name: "✨ Крит",             desc: "+15% шанс крита (x2 урон)",    rarity: "rare",   apply: p => p.critChance += 0.15 },
+  { id: "magnet",  name: "🧲 Магнит",          desc: "+60% к радиусу подбора",        rarity: "rare",   apply: p => p.magnet *= 1.6 },
+  { id: "thorns",  name: "🌵 Шипы",            desc: "Враги получают урон при контакте", rarity: "rare", apply: p => p.thorns += 0.3 },
+  { id: "vamp",    name: "🩸 Вампиризм",       desc: "Лечишься на 8% от урона",       rarity: "epic",   apply: p => p.lifesteal += 0.08 },
+  { id: "shield",  name: "🛡️ Щит",            desc: "Раз в N сек блокируешь удар",   rarity: "epic",   apply: p => { p.shieldCd = p.shieldCd ? Math.max(2, p.shieldCd - 2) : 8; p.shieldCharge = 1; } },
+  { id: "skillcd", name: "⏱ Перезарядка",     desc: "−25% к перезарядке скилла",     rarity: "epic",   apply: p => p.skillCdMax *= 0.75 },
+  { id: "skillpw", name: "💢 Сила скилла",     desc: "+50% к силе активного скилла",  rarity: "epic",   apply: p => p.skillPower *= 1.5 },
+  { id: "boom",    name: "💥 Взрыв",          desc: "Снаряд взрывается по AoE",      rarity: "legend", apply: p => p.explode = (p.explode || 0) + 22 },
+  { id: "chain",   name: "⚡ Цепная молния",  desc: "Снаряд отскакивает на +1 врага", rarity: "legend", apply: p => p.chain = (p.chain || 0) + 1 },
+  { id: "berserk", name: "😡 Берсерк",        desc: "Чем меньше HP — тем больше урон", rarity: "legend", apply: p => p.berserk = true },
 ];
 
 const META_UPGRADES = [
-  { id: "hp",     name: "❤️ Стартовое HP",   desc: "+10 HP с самого начала",     baseCost: 5,  max: 10 },
-  { id: "atk",    name: "🗡️ Стартовый урон", desc: "+10% урона стартом",        baseCost: 6,  max: 10 },
-  { id: "spd",    name: "👟 Стартовая скорость", desc: "+5% к скорости",         baseCost: 5,  max: 10 },
-  { id: "regen",  name: "💚 Стартовая регенерация", desc: "+0.3 HP/сек стартом", baseCost: 8,  max: 8 },
-  { id: "magnet", name: "🧲 Магнит",         desc: "+15% к радиусу подбора",     baseCost: 4,  max: 10 },
-  { id: "luck",   name: "🍀 Удача",          desc: "+1% к шансу апгрейда предметов", baseCost: 10, max: 10 },
+  { id: "hp",     name: "❤️ Стартовое HP",         desc: "+15 HP с самого начала",        baseCost: 5,  max: 10 },
+  { id: "atk",    name: "🗡️ Стартовый урон",      desc: "+10% урона стартом",            baseCost: 6,  max: 10 },
+  { id: "spd",    name: "👟 Стартовая скорость",   desc: "+5% к скорости",                baseCost: 5,  max: 10 },
+  { id: "regen",  name: "💚 Стартовая регенерация", desc: "+0.3 HP/сек стартом",          baseCost: 8,  max: 8 },
+  { id: "magnet", name: "🧲 Магнит",                desc: "+15% к радиусу подбора",       baseCost: 4,  max: 10 },
+  { id: "luck",   name: "🍀 Удача",                 desc: "+1% к шансу апгрейда предметов", baseCost: 10, max: 10 },
+  { id: "skill",  name: "⚡ Стартовый скилл",       desc: "−10% к перезарядке скилла",     baseCost: 8,  max: 6 },
 ];
 
 function metaCost(u) {
@@ -1729,11 +1755,8 @@ function rogueShowOverlay(which) {
   $("#rogueMenuLevelUp").classList.toggle("hidden", which !== "levelup");
   $("#rogueMenuDead").classList.toggle("hidden", which !== "dead");
   $("#rogueMenuMeta").classList.toggle("hidden", which !== "meta");
-  if (which === "start") {
-    renderRogueMeta($("#rogueMetaPanel"));
-  } else if (which === "meta") {
-    renderRogueMeta($("#rogueMetaList"));
-  }
+  if (which === "start") renderRogueMeta($("#rogueMetaPanel"));
+  else if (which === "meta") renderRogueMeta($("#rogueMetaList"));
 }
 function rogueHideOverlay() { $("#rogueOverlay").classList.add("hidden"); }
 
@@ -1753,37 +1776,99 @@ function rogueResize() {
   rogueRefs.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+const ROGUE_SKILLS = [
+  {
+    id: "nova", name: "Волна", ico: "💫", cdBase: 12,
+    cast(p) {
+      const radius = 150 * p.skillPower;
+      const dmg = p.atk * 4 * p.skillPower;
+      const N = 36;
+      for (let k = 0; k < N; k++) {
+        const a = (k / N) * Math.PI * 2;
+        ROGUE.particles.push({
+          x: p.x, y: p.y, vx: Math.cos(a) * 220, vy: Math.sin(a) * 220,
+          life: 0.6, color: "#66e0ff",
+        });
+      }
+      for (const e of ROGUE.enemies) {
+        const d = Math.hypot(e.x - p.x, e.y - p.y);
+        if (d < radius) rogueDamageEnemy(e, dmg, false);
+      }
+      rogueAddPopup("NOVA!", p.x, p.y - p.r - 10, "crit");
+    }
+  },
+  {
+    id: "rage", name: "Ярость", ico: "🔥", cdBase: 18,
+    cast(p) {
+      p.rageT = (p.rageT || 0) + 6;
+      rogueAddPopup("RAGE!", p.x, p.y - p.r - 10, "crit");
+      for (let i = 0; i < 24; i++) {
+        ROGUE.particles.push({
+          x: p.x, y: p.y, vx: (Math.random()-0.5)*120, vy: (Math.random()-0.5)*120 - 60,
+          life: 0.7, color: "#fb923c",
+        });
+      }
+    }
+  },
+  {
+    id: "heal", name: "Лечение", ico: "💚", cdBase: 16,
+    cast(p) {
+      const heal = Math.floor(p.hpMax * 0.4 * p.skillPower);
+      p.hp = Math.min(p.hpMax, p.hp + heal);
+      rogueAddPopup("+" + heal, p.x, p.y - p.r - 10, "heal");
+      for (let i = 0; i < 16; i++) {
+        ROGUE.particles.push({
+          x: p.x, y: p.y, vx: (Math.random()-0.5)*80, vy: -(40 + Math.random()*40),
+          life: 0.7, color: "#4ade80",
+        });
+      }
+    }
+  },
+];
+
 function rogueInitPlayer() {
   const meta = state.arcade.metaUpgrades;
+  const skill = ROGUE_SKILLS[Math.floor(Math.random() * ROGUE_SKILLS.length)];
+  const skillStartReduction = 1 - 0.10 * (meta.skill || 0);
   ROGUE.player = {
     x: rogueRefs.W / 2,
     y: rogueRefs.H / 2,
-    r: 9,
+    r: 11,
     color: "#66e0ff",
-    hpMax: 100 + meta.hp * 10,
-    hp: 100 + meta.hp * 10,
-    spd: 70 * (1 + 0.05 * meta.spd),
-    atk: 12 * (1 + 0.10 * meta.atk),
-    atkRate: 1.5,                   // выстрелов в сек
-    atkRange: 110,
+    hpMax: 100 + (meta.hp || 0) * 15,
+    hp: 100 + (meta.hp || 0) * 15,
+    spd: 80 * (1 + 0.05 * (meta.spd || 0)),
+    atk: 14 * (1 + 0.10 * (meta.atk || 0)),
+    atkRate: 1.6,
+    atkRange: 130,
     atkCd: 0,
+    bulletR: 4,
+    bulletSpeed: 260,
     shotsPerTick: 1,
     pierce: 0,
+    chain: 0,
     explode: 0,
     critChance: 0.05,
-    regen: 0.3 * meta.regen,
+    regen: 0.3 * (meta.regen || 0),
     regenAcc: 0,
     lifesteal: 0,
-    shieldCd: 0,                    // 0 = нет щита, иначе кулдаун; charge ниже
+    thorns: 0,
+    shieldCd: 0,
     shieldCharge: 0,
     shieldTimer: 0,
-    magnet: 22 * (1 + 0.15 * meta.magnet),
+    magnet: 30 * (1 + 0.15 * (meta.magnet || 0)),
     xp: 0,
     xpNext: 6,
     level: 1,
     facing: 0,
+    rageT: 0,
+    berserk: false,
+    skill,
+    skillCdMax: skill.cdBase * skillStartReduction,
+    skillCd: skill.cdBase * 0.5 * skillStartReduction,
+    skillPower: 1,
+    iframe: 0,
   };
-  if (ROGUE.player.shieldCd === 0) ROGUE.player.shieldCharge = 0;
 }
 
 function rogueStart() {
@@ -1796,6 +1881,7 @@ function rogueStart() {
   ROGUE.popups.length = 0;
   ROGUE.depth = 1;
   ROGUE.killCount = 0;
+  ROGUE.totalKills = 0;
   ROGUE.goldGained = 0;
   ROGUE.shardsGained = 0;
   ROGUE.spawnInterval = 1.5;
@@ -1804,8 +1890,9 @@ function rogueStart() {
   ROGUE.bossSpawnedAtDepth = false;
   ROGUE.startTime = performance.now();
   ROGUE.paused = false;
-  // фон точек (звёздочки)
-  ROGUE.bg = Array.from({ length: 40 }, () => ({
+  ROGUE.victory = false;
+  ROGUE.floorAnnouncement = 2;
+  ROGUE.bg = Array.from({ length: 50 }, () => ({
     x: Math.random() * rogueRefs.W,
     y: Math.random() * rogueRefs.H,
     s: Math.random() * 1.4 + 0.4,
@@ -1816,52 +1903,52 @@ function rogueStart() {
   rogueRefs.last = performance.now();
   rogueLoop(rogueRefs.last);
   $("#rogueDepth").textContent = "Этаж " + ROGUE.depth;
+  $("#roguePauseBtn").textContent = "⏸ Пауза";
+  rogueUpdateSkillBtn();
 }
 
 function rogueAddPopup(text, x, y, kind) {
-  ROGUE.popups.push({ text, x, y, kind, life: 0.7 });
+  ROGUE.popups.push({ text, x, y, kind, life: 0.8 });
 }
 
-function rogueSpawnEnemy(force) {
+function rogueSpawnEnemy() {
   const w = rogueRefs.W, h = rogueRefs.H;
-  // на краю
   const side = Math.floor(Math.random() * 4);
   let x, y;
   if (side === 0) { x = -10; y = Math.random() * h; }
   else if (side === 1) { x = w + 10; y = Math.random() * h; }
   else if (side === 2) { y = -10; x = Math.random() * w; }
   else { y = h + 10; x = Math.random() * w; }
-
-  const depthMul = 1 + (ROGUE.depth - 1) * 0.18;
-  // тип:
+  const depthMul = 1 + (ROGUE.depth - 1) * 0.20;
   const r = Math.random();
   let type, hp, dmg, spd, color, radius, isFast = false, isShoot = false;
   if (r < 0.55 || ROGUE.depth < 3) {
-    type = "slime"; hp = 20 * depthMul; dmg = 8 * depthMul; spd = 38; color = "#a78bfa"; radius = 8;
+    type = "slime"; hp = 22 * depthMul; dmg = 8 * depthMul; spd = 38; color = "#a78bfa"; radius = 9;
   } else if (r < 0.80) {
-    type = "bat"; hp = 14 * depthMul; dmg = 6 * depthMul; spd = 65; color = "#f87171"; radius = 7; isFast = true;
-  } else if (r < 0.95) {
-    type = "tank"; hp = 60 * depthMul; dmg = 14 * depthMul; spd = 26; color = "#4ade80"; radius = 12;
+    type = "bat";   hp = 16 * depthMul; dmg = 6 * depthMul; spd = 70; color = "#f87171"; radius = 8; isFast = true;
+  } else if (r < 0.93) {
+    type = "tank";  hp = 70 * depthMul; dmg = 14 * depthMul; spd = 26; color = "#4ade80"; radius = 13;
   } else {
-    type = "shooter"; hp = 22 * depthMul; dmg = 7 * depthMul; spd = 30; color = "#fb923c"; radius = 8; isShoot = true;
+    type = "shooter"; hp = 26 * depthMul; dmg = 7 * depthMul; spd = 30; color = "#fb923c"; radius = 9; isShoot = true;
   }
-
   ROGUE.enemies.push({
     x, y, r: radius, hp, hpMax: hp, dmg, spd, color, type,
     hitFlash: 0, isFast, isShoot, shootCd: 1.5 + Math.random(),
   });
 }
 
+const BOSS_TYPES = [
+  { type: "slime-king", color: "#c084fc", hp: 380, dmg: 16, spd: 22, r: 24, ico: "👹", title: "Король Слизней" },
+  { type: "demon",      color: "#ef4444", hp: 700, dmg: 22, spd: 30, r: 26, ico: "😈", title: "Демон Глубин" },
+  { type: "lich",       color: "#22d3ee", hp: 1100, dmg: 22, spd: 36, r: 28, ico: "💀", title: "Лич" },
+  { type: "titan",      color: "#facc15", hp: 1700, dmg: 30, spd: 26, r: 32, ico: "👑", title: "Титан" },
+];
+
 function rogueSpawnBoss(stage) {
-  const w = rogueRefs.W, h = rogueRefs.H;
+  const w = rogueRefs.W;
   const depthMul = 1 + (stage / 5) * 0.7;
-  const bossTypes = [
-    { type: "slime-king", color: "#c084fc", hp: 350, dmg: 16, spd: 22, r: 22, ico: "👹" },
-    { type: "demon",      color: "#ef4444", hp: 600, dmg: 22, spd: 30, r: 24, ico: "😈" },
-    { type: "lich",       color: "#22d3ee", hp: 850, dmg: 18, spd: 36, r: 26, ico: "💀" },
-    { type: "titan",      color: "#facc15", hp: 1200, dmg: 28, spd: 24, r: 30, ico: "👑" },
-  ];
-  const b = bossTypes[Math.min(bossTypes.length - 1, Math.floor((stage - 1) / 5))];
+  const idx = Math.min(BOSS_TYPES.length - 1, Math.floor((stage - 1) / 5));
+  const b = BOSS_TYPES[idx];
   ROGUE.enemies.push({
     x: w / 2, y: -30,
     r: b.r, hp: b.hp * depthMul, hpMax: b.hp * depthMul,
@@ -1869,28 +1956,32 @@ function rogueSpawnBoss(stage) {
     isBoss: true, hitFlash: 0, shootCd: 2,
   });
   ROGUE.bossActive = true;
+  rogueAddPopup(b.title.toUpperCase() + " ИДЁТ!", w / 2, rogueRefs.H / 2, "crit");
 }
 
 function rogueShoot() {
   const p = ROGUE.player;
-  // ищем N ближайших врагов в радиусе
   const inRange = ROGUE.enemies
     .map(e => ({ e, d: Math.hypot(e.x - p.x, e.y - p.y) }))
     .filter(o => o.d <= p.atkRange)
     .sort((a, b) => a.d - b.d)
     .slice(0, p.shotsPerTick);
   if (inRange.length === 0) return;
+  let dmgMul = 1;
+  if (p.rageT > 0) dmgMul *= 2.2;
+  if (p.berserk) dmgMul *= (1 + (1 - p.hp / p.hpMax));
   for (const o of inRange) {
     const dx = o.e.x - p.x, dy = o.e.y - p.y;
     const len = Math.hypot(dx, dy) || 1;
     const isCrit = Math.random() < p.critChance;
-    const dmg = p.atk * (isCrit ? 2 : 1);
+    const dmg = p.atk * (isCrit ? 2 : 1) * dmgMul;
     ROGUE.bullets.push({
       x: p.x, y: p.y,
-      vx: (dx / len) * 220, vy: (dy / len) * 220,
-      r: 4, dmg, life: 1.0,
+      vx: (dx / len) * p.bulletSpeed, vy: (dy / len) * p.bulletSpeed,
+      r: p.bulletR, dmg, life: 1.1,
       pierce: p.pierce,
       explode: p.explode,
+      chain: p.chain,
       crit: isCrit,
       hitSet: new Set(),
     });
@@ -1910,9 +2001,7 @@ function rogueGiveXP(p, amount) {
 
 function rogueOfferLevelUp() {
   ROGUE.paused = true;
-  // 3 случайных перка
   const pool = ROGUE_PERKS.slice();
-  // взвешиваем редкость
   const weights = pool.map(p => ({ ...p, w: p.rarity === "common" ? 60 : p.rarity === "rare" ? 28 : p.rarity === "epic" ? 10 : 4 }));
   const choices = [];
   while (choices.length < 3 && weights.length > 0) {
@@ -1931,8 +2020,9 @@ function rogueOfferLevelUp() {
   for (const c of choices) {
     const b = document.createElement("button");
     b.className = "rogue-choice " + (c.rarity || "common");
+    const icoChar = c.name.split(" ")[0];
     b.innerHTML = `<div class="choice-row">
-      <div class="choice-ico">${c.name.split(" ")[0]}</div>
+      <div class="choice-ico">${icoChar}</div>
       <div>
         <div class="choice-name">${c.name}</div>
         <div class="choice-desc">${c.desc}</div>
@@ -1949,17 +2039,21 @@ function rogueOfferLevelUp() {
   rogueShowOverlay("levelup");
 }
 
-function rogueDie() {
+function rogueDie(victory) {
   ROGUE.running = false;
+  ROGUE.victory = !!victory;
   if (rogueRefs.raf) cancelAnimationFrame(rogueRefs.raf);
   rogueRefs.raf = null;
-  // награда: shards + gold (gold идёт в основной баланс!)
   const time = (performance.now() - ROGUE.startTime) / 1000;
-  const earnedShards = ROGUE.shardsGained + Math.floor(ROGUE.depth * 1) + Math.floor(ROGUE.killCount / 8);
-  const earnedGold = ROGUE.goldGained;
+  const reachedDepth = ROGUE.depth;
+  let earnedShards = ROGUE.shardsGained
+    + Math.floor(reachedDepth * 1.2)
+    + Math.floor(ROGUE.totalKills / 8);
+  if (victory) earnedShards += 30;
+  const earnedGold = ROGUE.goldGained + (victory ? 500 : 0);
   state.arcade.soulShards += earnedShards;
-  if (ROGUE.depth > state.arcade.rogueBest.depth) state.arcade.rogueBest.depth = ROGUE.depth;
-  if (ROGUE.killCount > state.arcade.rogueBest.kills) state.arcade.rogueBest.kills = ROGUE.killCount;
+  if (reachedDepth > state.arcade.rogueBest.depth) state.arcade.rogueBest.depth = reachedDepth;
+  if (ROGUE.totalKills > state.arcade.rogueBest.kills) state.arcade.rogueBest.kills = ROGUE.totalKills;
   if (time > state.arcade.rogueBest.time) state.arcade.rogueBest.time = time;
   if (earnedGold > 0) {
     state.balance += earnedGold;
@@ -1968,15 +2062,23 @@ function rogueDie() {
   save();
   $("#rogueDeadStats").innerHTML = `
     <div style="display:flex; flex-direction: column; gap:4px; font-size:13px; margin: 8px 0;">
-      <div>Этаж: <b>${ROGUE.depth}</b></div>
-      <div>Убито: <b>${ROGUE.killCount}</b></div>
+      <div>Этаж: <b>${reachedDepth}</b></div>
+      <div>Убито: <b>${ROGUE.totalKills}</b></div>
       <div>Время: <b>${formatTime(time)}</b></div>
       <div style="margin-top:6px;">💎 Осколков получено: <b style="color: var(--purple);">+${earnedShards}</b></div>
       <div>🪙 Золото в баланс: <b style="color: var(--gold);">+${fmt(earnedGold)}</b></div>
     </div>`;
-  $("#rogueDeadTitle").textContent = ROGUE.depth >= 15 ? "🏆 Финальный босс пал!" : "💀 Гибель";
+  if (victory) {
+    $("#rogueDeadTitle").textContent = "🏆 ПОБЕДА! Титан повержен";
+    $("#rogueMenuDead").classList.add("win");
+    confettiBurst(120);
+    showBigWin(earnedGold, "🗡️ Подземелье", { ico: "👑", title: "Победа над Титаном!" });
+  } else {
+    $("#rogueDeadTitle").textContent = "💀 Гибель";
+    $("#rogueMenuDead").classList.remove("win");
+  }
   rogueShowOverlay("dead");
-  haptic("lose");
+  haptic(victory ? "win" : "lose");
 }
 
 function formatTime(sec) {
@@ -1985,11 +2087,11 @@ function formatTime(sec) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function rogueDamageEnemy(e, dmg, isCrit, x, y) {
+function rogueDamageEnemy(e, dmg, isCrit) {
+  if (e.hp <= 0) return;
   e.hp -= dmg;
   e.hitFlash = 0.15;
   rogueAddPopup(Math.floor(dmg).toString(), e.x, e.y - e.r, isCrit ? "crit" : "");
-  // particles
   for (let i = 0; i < 4; i++) {
     ROGUE.particles.push({
       x: e.x, y: e.y, vx: (Math.random() - 0.5) * 80, vy: (Math.random() - 0.5) * 80,
@@ -1997,54 +2099,82 @@ function rogueDamageEnemy(e, dmg, isCrit, x, y) {
     });
   }
   if (e.hp <= 0) {
-    // drop
     const isBoss = !!e.isBoss;
-    const drops = isBoss ? 6 + Math.floor(Math.random() * 4) : 1;
+    const drops = isBoss ? 8 + Math.floor(Math.random() * 5) : 1;
     for (let i = 0; i < drops; i++) {
       ROGUE.drops.push({
-        x: e.x + (Math.random() - 0.5) * 20, y: e.y + (Math.random() - 0.5) * 20,
+        x: e.x + (Math.random() - 0.5) * 24, y: e.y + (Math.random() - 0.5) * 24,
         type: Math.random() < 0.85 ? "xp" : "heart",
         life: 30,
       });
     }
     if (isBoss) {
       ROGUE.bossActive = false;
-      ROGUE.shardsGained += 3 + Math.floor(ROGUE.depth / 5);
-      // shard drop visible
+      ROGUE.shardsGained += 4 + Math.floor(ROGUE.depth / 5);
       ROGUE.drops.push({ x: e.x, y: e.y, type: "shard", life: 30 });
+      ROGUE.drops.push({ x: e.x + 14, y: e.y, type: "shard", life: 30 });
+      ROGUE.totalKills++;
+      if (ROGUE.depth >= 20) { rogueDie(true); return; }
       ROGUE.depth++;
-      $("#rogueDepth").textContent = "Этаж " + ROGUE.depth;
-      if (ROGUE.depth > 20) { rogueDie(); return; }
+      ROGUE.killCount = 0;
       ROGUE.bossSpawnedAtDepth = false;
+      ROGUE.floorAnnouncement = 2;
+      $("#rogueDepth").textContent = "Этаж " + ROGUE.depth;
+      const heal = Math.floor(ROGUE.player.hpMax * 0.25);
+      ROGUE.player.hp = Math.min(ROGUE.player.hpMax, ROGUE.player.hp + heal);
     } else {
       ROGUE.killCount++;
+      ROGUE.totalKills++;
       ROGUE.goldGained += 1 + Math.floor(Math.random() * 2);
     }
   }
 }
 
-function rogueUpdate(dt) {
-  if (ROGUE.paused) return;
+function rogueTryCastSkill() {
+  if (!ROGUE.running || ROGUE.paused) return;
   const p = ROGUE.player;
-  // регенерация
+  if (!p || p.skillCd > 0) { haptic("warn"); return; }
+  p.skill.cast(p);
+  p.skillCd = p.skillCdMax;
+  haptic("medium");
+  rogueUpdateSkillBtn();
+}
+
+function rogueUpdateSkillBtn() {
+  const btn = $("#rogueSkillBtn");
+  if (!btn) return;
+  const p = ROGUE.player;
+  if (!p) return;
+  $("#rogueSkillIco").textContent = p.skill.ico;
+  if (p.skillCd > 0) {
+    btn.classList.add("cooldown");
+    btn.classList.remove("ready");
+    $("#rogueSkillCd").textContent = Math.ceil(p.skillCd);
+  } else {
+    btn.classList.remove("cooldown");
+    btn.classList.add("ready");
+    $("#rogueSkillCd").textContent = "";
+  }
+}
+
+function rogueUpdate(dt) {
+  if (ROGUE.paused || !ROGUE.running) return;
+  const p = ROGUE.player;
+  if (p.iframe > 0) p.iframe -= dt;
+  if (p.rageT > 0) p.rageT = Math.max(0, p.rageT - dt);
+  if (p.skillCd > 0) p.skillCd = Math.max(0, p.skillCd - dt);
+
   p.regenAcc += p.regen * dt;
   if (p.regenAcc >= 1) {
     const heal = Math.floor(p.regenAcc);
     p.regenAcc -= heal;
-    if (p.hp < p.hpMax) {
-      p.hp = Math.min(p.hpMax, p.hp + heal);
-      rogueAddPopup("+" + heal, p.x, p.y - p.r, "heal");
-    }
+    if (p.hp < p.hpMax) p.hp = Math.min(p.hpMax, p.hp + heal);
   }
-  // щит
   if (p.shieldCd > 0) {
     p.shieldTimer = (p.shieldTimer || 0) - dt;
-    if (p.shieldTimer <= 0 && p.shieldCharge < 1) {
-      p.shieldCharge = 1;
-    }
+    if (p.shieldTimer <= 0 && p.shieldCharge < 1) p.shieldCharge = 1;
   }
 
-  // движение игрока (джойстик)
   const j = ROGUE.joy;
   if (j.active && j.len > 0.05) {
     p.x += j.dx * p.spd * dt;
@@ -2053,35 +2183,28 @@ function rogueUpdate(dt) {
   p.x = Math.max(p.r, Math.min(rogueRefs.W - p.r, p.x));
   p.y = Math.max(p.r, Math.min(rogueRefs.H - p.r, p.y));
 
-  // авто-атака
+  let rate = p.atkRate;
+  if (p.rageT > 0) rate *= 1.5;
   p.atkCd -= dt;
   if (p.atkCd <= 0) {
     rogueShoot();
-    p.atkCd = 1 / p.atkRate;
+    p.atkCd = 1 / rate;
   }
 
-  // спавн врагов
   if (!ROGUE.bossActive) {
     ROGUE.spawnTimer += dt;
-    const interval = Math.max(0.35, ROGUE.spawnInterval - ROGUE.depth * 0.06);
+    const interval = Math.max(0.30, ROGUE.spawnInterval - ROGUE.depth * 0.06);
     if (ROGUE.spawnTimer >= interval) {
       ROGUE.spawnTimer = 0;
       const cnt = 1 + Math.floor(Math.random() * (ROGUE.depth > 4 ? 2 : 1));
       for (let i = 0; i < cnt; i++) rogueSpawnEnemy();
     }
-    // босс на 5/10/15/20 этажах после Х килов
     if (!ROGUE.bossSpawnedAtDepth && ROGUE.depth % 5 === 0 && ROGUE.killCount >= 8 + ROGUE.depth) {
       rogueSpawnBoss(ROGUE.depth);
       ROGUE.bossSpawnedAtDepth = true;
     }
-    // прогресс по этажам по килам (для не-боссовых уровней)
-    const killsForFloor = 12 + ROGUE.depth * 4;
-    if (!ROGUE.bossActive && ROGUE.depth % 5 !== 0 && ROGUE.killCount >= killsForFloor * Math.ceil(ROGUE.depth / 1)) {
-      // уже учитывается ниже через depthChecker; оставим простую логику в иной ветке
-    }
   }
 
-  // движение врагов и контакт
   for (let i = ROGUE.enemies.length - 1; i >= 0; i--) {
     const e = ROGUE.enemies[i];
     if (e.hitFlash > 0) e.hitFlash = Math.max(0, e.hitFlash - dt);
@@ -2089,65 +2212,66 @@ function rogueUpdate(dt) {
     const dist = Math.hypot(dx, dy) || 1;
     e.x += (dx / dist) * e.spd * dt;
     e.y += (dy / dist) * e.spd * dt;
-    // shooter атакует
     if (e.isShoot) {
       e.shootCd -= dt;
-      if (e.shootCd <= 0 && dist < 200) {
+      if (e.shootCd <= 0 && dist < 220) {
         ROGUE.bullets.push({
           x: e.x, y: e.y,
-          vx: (dx / dist) * 130, vy: (dy / dist) * 130,
+          vx: (dx / dist) * 140, vy: (dy / dist) * 140,
           r: 4, dmg: e.dmg * 0.6, life: 2,
           enemy: true, color: "#fb923c",
         });
         e.shootCd = 1.8 + Math.random() * 1.2;
       }
     }
-    if (e.isBoss && (e.shootCd = (e.shootCd || 2) - dt) <= 0) {
-      // босс делает круговой выстрел
-      const N = 8;
-      for (let k = 0; k < N; k++) {
-        const ang = (k / N) * Math.PI * 2;
-        ROGUE.bullets.push({
-          x: e.x, y: e.y,
-          vx: Math.cos(ang) * 110, vy: Math.sin(ang) * 110,
-          r: 5, dmg: e.dmg * 0.5, life: 3,
-          enemy: true, color: "#ef4444",
-        });
+    if (e.isBoss) {
+      e.shootCd = (e.shootCd || 2) - dt;
+      if (e.shootCd <= 0) {
+        const N = 10;
+        for (let k = 0; k < N; k++) {
+          const ang = (k / N) * Math.PI * 2;
+          ROGUE.bullets.push({
+            x: e.x, y: e.y,
+            vx: Math.cos(ang) * 120, vy: Math.sin(ang) * 120,
+            r: 5, dmg: e.dmg * 0.5, life: 3,
+            enemy: true, color: "#ef4444",
+          });
+        }
+        e.shootCd = 3.2;
       }
-      e.shootCd = 3.5;
     }
-    // контакт
     if (dist < e.r + p.r) {
       let dmg = e.dmg * dt * 1.6;
-      // щит
-      if (p.shieldCd > 0 && p.shieldCharge >= 1 && dmg > 0) {
-        // блокирует один тик контакта (упростим: блок + кулдаун)
+      if (p.shieldCd > 0 && p.shieldCharge >= 1 && dmg > 0 && p.iframe <= 0) {
         dmg = 0;
         p.shieldCharge = 0;
         p.shieldTimer = p.shieldCd;
         rogueAddPopup("BLOCK", p.x, p.y - p.r - 10, "heal");
+        p.iframe = 0.4;
       }
-      if (dmg > 0) {
+      if (dmg > 0 && p.iframe <= 0) {
         p.hp -= dmg;
-        if (p.hp <= 0) { rogueDie(); return; }
+        if (p.thorns > 0) rogueDamageEnemy(e, dmg * p.thorns * 8, false);
+        if (p.hp <= 0) { rogueDie(false); return; }
       }
     }
     if (e.hp <= 0) ROGUE.enemies.splice(i, 1);
   }
 
-  // переход на следующий этаж по килам (не-боссовые)
   if (!ROGUE.bossActive && ROGUE.depth % 5 !== 0) {
     const need = 10 + ROGUE.depth * 3;
     if (ROGUE.killCount >= need) {
       ROGUE.depth++;
-      $("#rogueDepth").textContent = "Этаж " + ROGUE.depth;
       ROGUE.killCount = 0;
       ROGUE.bossSpawnedAtDepth = false;
-      rogueAddPopup("ЭТАЖ " + ROGUE.depth, p.x, p.y - 30, "crit");
+      ROGUE.floorAnnouncement = 2;
+      $("#rogueDepth").textContent = "Этаж " + ROGUE.depth;
+      const heal = Math.floor(p.hpMax * 0.10);
+      p.hp = Math.min(p.hpMax, p.hp + heal);
     }
   }
+  if (ROGUE.floorAnnouncement > 0) ROGUE.floorAnnouncement -= dt;
 
-  // bullets
   for (let i = ROGUE.bullets.length - 1; i >= 0; i--) {
     const b = ROGUE.bullets[i];
     b.x += b.vx * dt;
@@ -2158,49 +2282,70 @@ function rogueUpdate(dt) {
       continue;
     }
     if (b.enemy) {
-      // вражеский снаряд бьёт игрока
       if (Math.hypot(b.x - p.x, b.y - p.y) < b.r + p.r) {
         let dmg = b.dmg;
-        if (p.shieldCd > 0 && p.shieldCharge >= 1) {
+        if (p.shieldCd > 0 && p.shieldCharge >= 1 && p.iframe <= 0) {
           dmg = 0;
           p.shieldCharge = 0;
           p.shieldTimer = p.shieldCd;
           rogueAddPopup("BLOCK", p.x, p.y - p.r - 10, "heal");
+          p.iframe = 0.4;
         }
-        if (dmg > 0) {
+        if (dmg > 0 && p.iframe <= 0) {
           p.hp -= dmg;
-          if (p.hp <= 0) { rogueDie(); return; }
+          if (p.hp <= 0) { rogueDie(false); return; }
         }
         ROGUE.bullets.splice(i, 1);
       }
       continue;
     }
-    // наш снаряд
+    let removed = false;
     for (const e of ROGUE.enemies) {
       if (b.hitSet && b.hitSet.has(e)) continue;
       if (Math.hypot(b.x - e.x, b.y - e.y) < b.r + e.r) {
-        rogueDamageEnemy(e, b.dmg, b.crit, b.x, b.y);
-        // ваmpiрizm
+        rogueDamageEnemy(e, b.dmg, b.crit);
         if (p.lifesteal > 0) {
           const heal = b.dmg * p.lifesteal;
-          if (p.hp < p.hpMax) {
-            p.hp = Math.min(p.hpMax, p.hp + heal);
-          }
+          if (p.hp < p.hpMax) p.hp = Math.min(p.hpMax, p.hp + heal);
         }
         if (b.explode) {
-          // AoE
           for (const e2 of ROGUE.enemies) {
             if (e2 === e) continue;
             if (Math.hypot(b.x - e2.x, b.y - e2.y) < b.explode) {
-              rogueDamageEnemy(e2, b.dmg * 0.6, false, b.x, b.y);
+              rogueDamageEnemy(e2, b.dmg * 0.6, false);
             }
           }
-          // частицы взрыва
           for (let pp = 0; pp < 12; pp++) {
             ROGUE.particles.push({
               x: b.x, y: b.y, vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200,
               life: 0.4, color: "#fb923c",
             });
+          }
+        }
+        if (b.chain && b.chain > 0) {
+          let chained = e;
+          let chargesLeft = b.chain;
+          while (chargesLeft > 0) {
+            let next = null, ndist = 120;
+            for (const e3 of ROGUE.enemies) {
+              if (e3 === chained || (b.hitSet && b.hitSet.has(e3))) continue;
+              const dd = Math.hypot(e3.x - chained.x, e3.y - chained.y);
+              if (dd < ndist) { ndist = dd; next = e3; }
+            }
+            if (!next) break;
+            rogueDamageEnemy(next, b.dmg * 0.6, false);
+            for (let zz = 0; zz < 8; zz++) {
+              const t = zz / 8;
+              ROGUE.particles.push({
+                x: chained.x * (1-t) + next.x * t,
+                y: chained.y * (1-t) + next.y * t,
+                vx: 0, vy: 0, life: 0.25, color: "#66e0ff",
+              });
+            }
+            if (!b.hitSet) b.hitSet = new Set();
+            b.hitSet.add(next);
+            chained = next;
+            chargesLeft--;
           }
         }
         if (b.pierce > 0) {
@@ -2209,27 +2354,28 @@ function rogueUpdate(dt) {
           b.pierce--;
         } else {
           ROGUE.bullets.splice(i, 1);
+          removed = true;
         }
         break;
       }
     }
+    if (removed) continue;
   }
 
-  // подбор лута + magnet
   for (let i = ROGUE.drops.length - 1; i >= 0; i--) {
     const d = ROGUE.drops[i];
     d.life -= dt;
     if (d.life <= 0) { ROGUE.drops.splice(i, 1); continue; }
     const dist = Math.hypot(p.x - d.x, p.y - d.y);
     if (dist < p.magnet) {
-      const k = (1 - dist / p.magnet) * 200 * dt;
+      const k = (1 - dist / p.magnet) * 240 * dt;
       d.x += ((p.x - d.x) / (dist || 1)) * k;
       d.y += ((p.y - d.y) / (dist || 1)) * k;
     }
-    if (dist < p.r + 6) {
+    if (dist < p.r + 8) {
       if (d.type === "xp") rogueGiveXP(p, 1);
       else if (d.type === "heart") {
-        const heal = 12;
+        const heal = 14;
         p.hp = Math.min(p.hpMax, p.hp + heal);
         rogueAddPopup("+" + heal, p.x, p.y - p.r, "heal");
       }
@@ -2241,7 +2387,6 @@ function rogueUpdate(dt) {
     }
   }
 
-  // particles
   for (let i = ROGUE.particles.length - 1; i >= 0; i--) {
     const pr = ROGUE.particles[i];
     pr.life -= dt;
@@ -2249,7 +2394,6 @@ function rogueUpdate(dt) {
     pr.vx *= 0.9; pr.vy *= 0.9;
     if (pr.life <= 0) ROGUE.particles.splice(i, 1);
   }
-  // popups
   for (let i = ROGUE.popups.length - 1; i >= 0; i--) {
     const o = ROGUE.popups[i];
     o.life -= dt;
@@ -2262,20 +2406,17 @@ function rogueRender() {
   const ctx = rogueRefs.ctx;
   if (!ctx) return;
   const W = rogueRefs.W, H = rogueRefs.H;
-  // фон
   ctx.fillStyle = "#0a0a1a";
   ctx.fillRect(0, 0, W, H);
-  // лёгкая сетка для пиксельности
   ctx.strokeStyle = "rgba(255,255,255,0.03)";
   ctx.lineWidth = 1;
-  const grid = 24;
+  const grid = 28;
   for (let x = 0; x < W; x += grid) {
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
   }
   for (let y = 0; y < H; y += grid) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
   }
-  // звёзды
   for (const s of ROGUE.bg) {
     ctx.globalAlpha = s.a;
     ctx.fillStyle = "#ffffff";
@@ -2283,7 +2424,6 @@ function rogueRender() {
   }
   ctx.globalAlpha = 1;
 
-  // drops
   for (const d of ROGUE.drops) {
     if (d.type === "xp") {
       ctx.fillStyle = "#66e0ff";
@@ -2294,12 +2434,11 @@ function rogueRender() {
     } else if (d.type === "shard") {
       ctx.fillStyle = "#a78bfa";
       ctx.beginPath();
-      ctx.moveTo(d.x, d.y - 6); ctx.lineTo(d.x + 5, d.y); ctx.lineTo(d.x, d.y + 6); ctx.lineTo(d.x - 5, d.y);
+      ctx.moveTo(d.x, d.y - 7); ctx.lineTo(d.x + 6, d.y); ctx.lineTo(d.x, d.y + 7); ctx.lineTo(d.x - 6, d.y);
       ctx.closePath(); ctx.fill();
     }
   }
 
-  // particles
   for (const pr of ROGUE.particles) {
     ctx.globalAlpha = Math.max(0, pr.life * 2.5);
     ctx.fillStyle = pr.color;
@@ -2307,16 +2446,12 @@ function rogueRender() {
   }
   ctx.globalAlpha = 1;
 
-  // enemies
   for (const e of ROGUE.enemies) {
-    // тело — пиксельный квадратик
     ctx.fillStyle = e.hitFlash > 0 ? "#ffffff" : e.color;
     ctx.fillRect(e.x - e.r, e.y - e.r, e.r * 2, e.r * 2);
-    // глаза/контур
     ctx.fillStyle = "#000";
     ctx.fillRect(e.x - e.r * 0.5, e.y - e.r * 0.3, 2, 2);
     ctx.fillRect(e.x + e.r * 0.5 - 2, e.y - e.r * 0.3, 2, 2);
-    // hp bar для боссов / толстых
     if (e.hpMax > 30) {
       const w = Math.max(20, e.r * 2.5);
       const ratio = Math.max(0, e.hp / e.hpMax);
@@ -2326,14 +2461,13 @@ function rogueRender() {
       ctx.fillRect(e.x - w / 2, e.y - e.r - 7, w * ratio, 2);
     }
     if (e.isBoss && e.ico) {
-      ctx.font = "bold 16px sans-serif";
+      ctx.font = "bold 18px sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "white";
-      ctx.fillText(e.ico, e.x, e.y + 5);
+      ctx.fillText(e.ico, e.x, e.y + 6);
     }
   }
 
-  // bullets
   for (const b of ROGUE.bullets) {
     ctx.fillStyle = b.enemy ? (b.color || "#fb923c") : (b.crit ? "#fb923c" : "#ffd966");
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
@@ -2344,37 +2478,49 @@ function rogueRender() {
     }
   }
 
-  // player
   const p = ROGUE.player;
   if (p) {
-    // body
-    ctx.fillStyle = p.color;
-    ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
-    // glasses
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(p.x - p.r * 0.5, p.y - p.r * 0.3, 2, 2);
-    ctx.fillRect(p.x + p.r * 0.5 - 2, p.y - p.r * 0.3, 2, 2);
-    // direction "меч"
+    if (p.rageT > 0) {
+      ctx.strokeStyle = "rgba(251,146,60,0.5)";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 6, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (p.iframe <= 0 || (Math.floor(p.iframe * 20) % 2 === 0)) {
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(p.x - p.r * 0.5, p.y - p.r * 0.3, 2, 2);
+      ctx.fillRect(p.x + p.r * 0.5 - 2, p.y - p.r * 0.3, 2, 2);
+    }
     const fx = Math.cos(p.facing), fy = Math.sin(p.facing);
     ctx.strokeStyle = "#ffd966";
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.moveTo(p.x + fx * p.r, p.y + fy * p.r);
-    ctx.lineTo(p.x + fx * (p.r + 8), p.y + fy * (p.r + 8));
+    ctx.lineTo(p.x + fx * (p.r + 9), p.y + fy * (p.r + 9));
     ctx.stroke();
-    // shield глифа
     if (p.shieldCd > 0 && p.shieldCharge >= 1) {
       ctx.strokeStyle = "rgba(102,224,255,0.7)";
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + 5, 0, Math.PI * 2); ctx.stroke();
     }
-    // attack range hint
-    ctx.strokeStyle = "rgba(102,224,255,0.08)";
+    ctx.strokeStyle = "rgba(102,224,255,0.06)";
     ctx.beginPath(); ctx.arc(p.x, p.y, p.atkRange, 0, Math.PI * 2); ctx.stroke();
   }
 
-  // popups
+  if (ROGUE.floorAnnouncement > 0) {
+    ctx.globalAlpha = Math.min(1, ROGUE.floorAnnouncement);
+    ctx.font = "bold 32px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd966";
+    ctx.shadowColor = "rgba(0,0,0,0.7)";
+    ctx.shadowBlur = 8;
+    ctx.fillText("ЭТАЖ " + ROGUE.depth, W / 2, H / 2);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  }
+
   for (const o of ROGUE.popups) {
-    ctx.globalAlpha = Math.max(0, o.life * 1.5);
+    ctx.globalAlpha = Math.max(0, o.life * 1.4);
     ctx.font = o.kind === "crit" ? "bold 14px monospace" : "bold 12px monospace";
     ctx.fillStyle = o.kind === "crit" ? "#fb923c" : o.kind === "heal" ? "#4ade80" : "#ffd966";
     ctx.textAlign = "center";
@@ -2393,8 +2539,9 @@ function rogueUpdateHUD() {
   $("#rogueXpFill").style.width = (p.xp / p.xpNext * 100) + "%";
   const t = (performance.now() - ROGUE.startTime) / 1000;
   $("#rogueTime").textContent = formatTime(t);
-  $("#rogueKills").textContent = ROGUE.killCount;
+  $("#rogueKills").textContent = ROGUE.totalKills;
   $("#rogueGold").textContent = ROGUE.goldGained;
+  rogueUpdateSkillBtn();
 }
 
 function rogueLoop(now) {
@@ -2408,15 +2555,13 @@ function rogueLoop(now) {
   rogueRefs.raf = requestAnimationFrame(rogueLoop);
 }
 
-// инициализация рогалика при первом открытии
 function initRogueOnce() {
-  if (rogueRefs.canvas) return;
+  if (rogueRefs.inited) return;
+  rogueRefs.inited = true;
   rogueRefs.canvas = $("#rogueCanvas");
   rogueRefs.ctx = rogueRefs.canvas.getContext("2d");
-  // jоистик
   const stick = $("#rogueStick");
   const knob = $("#rogueStickKnob");
-  const center = { x: 55, y: 55 }; // центр стика (110/2)
   const moveKnob = (dx, dy) => {
     const max = 35;
     let len = Math.hypot(dx, dy);
@@ -2426,10 +2571,7 @@ function initRogueOnce() {
     ROGUE.joy.dy = len > 0 ? dy / max : 0;
     ROGUE.joy.len = len / max;
   };
-  const start = (e) => {
-    e.preventDefault();
-    ROGUE.joy.active = true;
-  };
+  const start = (e) => { e.preventDefault(); ROGUE.joy.active = true; };
   const move = (e) => {
     if (!ROGUE.joy.active) return;
     const t = e.touches?.[0] || e;
@@ -2438,21 +2580,44 @@ function initRogueOnce() {
     const cy = rect.top + rect.height / 2;
     moveKnob(t.clientX - cx, t.clientY - cy);
   };
-  const end = (e) => {
-    ROGUE.joy.active = false;
-    moveKnob(0, 0);
-  };
+  const end = () => { ROGUE.joy.active = false; moveKnob(0, 0); };
   stick.addEventListener("touchstart", start, { passive: false });
   stick.addEventListener("touchmove", move, { passive: false });
   stick.addEventListener("touchend", end);
   stick.addEventListener("touchcancel", end);
-  stick.addEventListener("mousedown", (e) => { start(e); document.addEventListener("mousemove", move); document.addEventListener("mouseup", upOnce); });
-  function upOnce(e) { end(e); document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", upOnce); }
+  stick.addEventListener("mousedown", (e) => {
+    start(e);
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", upOnce);
+  });
+  function upOnce() {
+    end();
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", upOnce);
+  }
+
+  const skillBtn = $("#rogueSkillBtn");
+  const onSkill = (e) => { e.preventDefault?.(); rogueTryCastSkill(); };
+  skillBtn.addEventListener("click", onSkill);
+  skillBtn.addEventListener("touchstart", onSkill, { passive: false });
 
   $("#rogueStartBtn").addEventListener("click", rogueStart);
-  $("#rogueRestartBtn").addEventListener("click", () => { rogueStart(); });
-  $("#rogueMetaBtn").addEventListener("click", () => rogueShowOverlay("meta"));
-  $("#rogueMetaClose").addEventListener("click", () => rogueShowOverlay(ROGUE.running ? "_none" : "start"));
+  $("#rogueRestartBtn").addEventListener("click", () => {
+    $("#rogueMenuDead").classList.remove("win");
+    rogueStart();
+  });
+  $("#rogueOpenMetaBtn").addEventListener("click", () => rogueShowOverlay("meta"));
+  $("#rogueDeadMetaBtn").addEventListener("click", () => rogueShowOverlay("meta"));
+  $("#rogueMetaClose").addEventListener("click", () => {
+    if (ROGUE.running) rogueHideOverlay();
+    else if (ROGUE.player && !ROGUE.running && ROGUE.totalKills > 0) rogueShowOverlay("dead");
+    else rogueShowOverlay("start");
+  });
+  $("#roguePauseBtn").addEventListener("click", () => {
+    if (!ROGUE.running) return;
+    ROGUE.paused = !ROGUE.paused;
+    $("#roguePauseBtn").textContent = ROGUE.paused ? "▶ Играть" : "⏸ Пауза";
+  });
   $("#rogueBack").addEventListener("click", () => {
     if (ROGUE.running) ROGUE.running = false;
     if (rogueRefs.raf) cancelAnimationFrame(rogueRefs.raf);
@@ -2461,17 +2626,16 @@ function initRogueOnce() {
   });
 
   window.addEventListener("resize", () => {
-    if (rogueRefs.canvas) rogueResize();
+    if (rogueRefs.canvas && $("#screen-rogue").classList.contains("open")) rogueResize();
   });
 }
 
-// открытие экрана рогалика
 function openRogueScreen() {
   initRogueOnce();
   openScreen("rogue");
-  // подождать раскрытия и измерить
-  setTimeout(rogueResize, 50);
+  setTimeout(rogueResize, 60);
   rogueShowOverlay("start");
+  $("#roguePauseBtn").textContent = "⏸ Пауза";
 }
 
 // ============================================================
@@ -2690,53 +2854,180 @@ function open2048() {
 }
 
 // ============================================================
-// SNAKE
+// SNAKE — 4 режима: classic / nowall / speed / maze
 // ============================================================
 const SNAKE = {
   cols: 20, rows: 20,
   body: [], dir: "right", nextDir: "right",
   food: null,
+  bonus: null,        // бонусное яблоко (Maze)
+  bonusLife: 0,
+  walls: [],          // стены для maze
   alive: false,
+  paused: false,
   score: 0,
-  speed: 8, // тиков в секунду
+  speed: 8,           // тиков/сек
+  baseSpeed: 8,
   acc: 0,
   raf: null, last: 0,
   ctx: null, canvas: null,
   W: 0, H: 0,
+  mode: "classic",
+  modeStarted: false,
+  inited: false,
+  shake: 0,           // тряска экрана при еде/смерти
+  pulse: 0,           // вспышка хвоста
 };
 
+const SNAKE_MODES = {
+  classic: {
+    name: "Classic",
+    title: "🐍 Classic",
+    desc: "Классика. Стены = смерть.",
+    speed: 8,
+    speedGrow: true,
+    wrap: false,
+    walls: false,
+    bonusFood: false,
+  },
+  nowall: {
+    name: "No Walls",
+    title: "🌀 No Walls",
+    desc: "Стены телепортируют на другую сторону. Спасение или ловушка?",
+    speed: 9,
+    speedGrow: true,
+    wrap: true,
+    walls: false,
+    bonusFood: false,
+  },
+  speed: {
+    name: "Speed",
+    title: "⚡ Speed",
+    desc: "Быстрый старт + ускорение от каждой еды. Очки x2.",
+    speed: 12,
+    speedGrow: true,
+    wrap: false,
+    walls: false,
+    bonusFood: false,
+    scoreMul: 2,
+  },
+  maze: {
+    name: "Maze",
+    title: "🧱 Maze",
+    desc: "Стены внутри арены. Иногда появляется золотое яблоко x5.",
+    speed: 8,
+    speedGrow: false,
+    wrap: false,
+    walls: true,
+    bonusFood: true,
+  },
+};
+
+function snakeBestKey(mode) { return "best_" + mode; }
+function snakeGetBest(mode) {
+  state.arcade.snakeBest = state.arcade.snakeBest || {};
+  return state.arcade.snakeBest[mode] || 0;
+}
+function snakeSetBest(mode, val) {
+  state.arcade.snakeBest = state.arcade.snakeBest || {};
+  if (val > (state.arcade.snakeBest[mode] || 0)) {
+    state.arcade.snakeBest[mode] = val;
+    if (val > (state.arcade.bestSnake || 0)) state.arcade.bestSnake = val;
+    save();
+    return true;
+  }
+  return false;
+}
+
+function snakeBuildWalls(mode) {
+  if (!SNAKE_MODES[mode].walls) return [];
+  const w = [];
+  // несколько маленьких блоков, не на старте змейки
+  const candidates = [
+    // 3 горизонтальные полосы по 4 клетки
+    ...Array.from({length: 4}, (_, i) => ({ x: 4 + i, y: 4 })),
+    ...Array.from({length: 4}, (_, i) => ({ x: 12 + i, y: 4 })),
+    ...Array.from({length: 4}, (_, i) => ({ x: 4 + i, y: 15 })),
+    ...Array.from({length: 4}, (_, i) => ({ x: 12 + i, y: 15 })),
+    // вертикальные
+    ...Array.from({length: 3}, (_, i) => ({ x: 9, y: 1 + i })),
+    ...Array.from({length: 3}, (_, i) => ({ x: 10, y: 16 + i })),
+    // центр-пробел: только одиночные блоки
+    { x: 6, y: 9 }, { x: 13, y: 9 },
+    { x: 6, y: 10 }, { x: 13, y: 10 },
+  ];
+  for (const c of candidates) {
+    if (c.x >= 0 && c.x < SNAKE.cols && c.y >= 0 && c.y < SNAKE.rows) w.push(c);
+  }
+  return w;
+}
+
 function snakeNew() {
+  const mode = SNAKE.mode;
+  const cfg = SNAKE_MODES[mode];
   SNAKE.body = [{ x: 9, y: 10 }, { x: 8, y: 10 }, { x: 7, y: 10 }];
   SNAKE.dir = "right";
   SNAKE.nextDir = "right";
-  SNAKE.food = snakeRandomFood();
   SNAKE.alive = true;
+  SNAKE.paused = false;
   SNAKE.score = 0;
-  SNAKE.speed = 8;
+  SNAKE.baseSpeed = cfg.speed;
+  SNAKE.speed = cfg.speed;
   SNAKE.acc = 0;
+  SNAKE.shake = 0;
+  SNAKE.pulse = 0;
+  SNAKE.modeStarted = true;
+  SNAKE.walls = snakeBuildWalls(mode);
+  SNAKE.bonus = null;
+  SNAKE.bonusLife = 0;
+  SNAKE.food = snakeRandomFood();
+
   $("#snakeOverlay").classList.add("hidden");
+  $("#scoreSnake").textContent = SNAKE.score;
+  $("#lenSnake").textContent = SNAKE.body.length;
+  $("#spdSnake").textContent = (SNAKE.speed / SNAKE.baseSpeed).toFixed(1) + "x";
+  $("#bestSnake").textContent = snakeGetBest(mode);
+
   snakeRender();
   if (!SNAKE.raf) {
     SNAKE.last = performance.now();
     SNAKE.raf = requestAnimationFrame(snakeLoop);
   }
-  $("#scoreSnake").textContent = SNAKE.score;
-  $("#lenSnake").textContent = SNAKE.body.length;
-  $("#spdSnake").textContent = (SNAKE.speed / 8).toFixed(1) + "x";
-  $("#bestSnake").textContent = state.arcade.bestSnake || 0;
+}
+
+function snakeOccupied(x, y) {
+  if (SNAKE.body.some(s => s.x === x && s.y === y)) return true;
+  if (SNAKE.walls.some(w => w.x === x && w.y === y)) return true;
+  if (SNAKE.food && SNAKE.food.x === x && SNAKE.food.y === y) return true;
+  if (SNAKE.bonus && SNAKE.bonus.x === x && SNAKE.bonus.y === y) return true;
+  return false;
 }
 
 function snakeRandomFood() {
-  while (true) {
+  for (let tries = 0; tries < 200; tries++) {
     const x = Math.floor(Math.random() * SNAKE.cols);
     const y = Math.floor(Math.random() * SNAKE.rows);
-    if (!SNAKE.body.some(s => s.x === x && s.y === y)) return { x, y };
+    if (!snakeOccupied(x, y)) return { x, y };
+  }
+  // фоллбек — первое свободное
+  for (let y = 0; y < SNAKE.rows; y++)
+    for (let x = 0; x < SNAKE.cols; x++)
+      if (!snakeOccupied(x, y)) return { x, y };
+  return { x: 0, y: 0 };
+}
+
+function snakeMaybeSpawnBonus() {
+  if (!SNAKE_MODES[SNAKE.mode].bonusFood) return;
+  if (SNAKE.bonus) return;
+  if (Math.random() < 0.30) {
+    SNAKE.bonus = snakeRandomFood();
+    SNAKE.bonusLife = 6; // секунд
   }
 }
 
 function snakeStep() {
-  if (!SNAKE.alive) return;
-  // не разворот
+  if (!SNAKE.alive || SNAKE.paused) return;
+  const cfg = SNAKE_MODES[SNAKE.mode];
   const opp = { up: "down", down: "up", left: "right", right: "left" };
   if (SNAKE.nextDir !== opp[SNAKE.dir]) SNAKE.dir = SNAKE.nextDir;
   const head = { ...SNAKE.body[0] };
@@ -2744,8 +3035,18 @@ function snakeStep() {
   else if (SNAKE.dir === "down") head.y++;
   else if (SNAKE.dir === "left") head.x--;
   else if (SNAKE.dir === "right") head.x++;
-  // стены
+
+  // стены / wrap
   if (head.x < 0 || head.y < 0 || head.x >= SNAKE.cols || head.y >= SNAKE.rows) {
+    if (cfg.wrap) {
+      head.x = (head.x + SNAKE.cols) % SNAKE.cols;
+      head.y = (head.y + SNAKE.rows) % SNAKE.rows;
+    } else {
+      return snakeOver();
+    }
+  }
+  // блоки
+  if (SNAKE.walls.some(w => w.x === head.x && w.y === head.y)) {
     return snakeOver();
   }
   // самопересечение
@@ -2753,57 +3054,186 @@ function snakeStep() {
     return snakeOver();
   }
   SNAKE.body.unshift(head);
+
+  let ate = false;
   if (head.x === SNAKE.food.x && head.y === SNAKE.food.y) {
-    SNAKE.score += 10;
+    const mul = cfg.scoreMul || 1;
+    SNAKE.score += 10 * mul;
     SNAKE.food = snakeRandomFood();
-    SNAKE.speed = Math.min(20, 8 + Math.floor(SNAKE.body.length / 5));
+    if (cfg.speedGrow) {
+      SNAKE.speed = Math.min(SNAKE.baseSpeed * 2.5, SNAKE.baseSpeed + Math.floor(SNAKE.body.length / 4));
+    }
+    SNAKE.shake = 0.18;
+    SNAKE.pulse = 0.4;
+    ate = true;
     haptic("light");
-  } else {
+    snakeMaybeSpawnBonus();
+  } else if (SNAKE.bonus && head.x === SNAKE.bonus.x && head.y === SNAKE.bonus.y) {
+    const mul = cfg.scoreMul || 1;
+    SNAKE.score += 50 * mul;
+    SNAKE.bonus = null;
+    SNAKE.bonusLife = 0;
+    SNAKE.shake = 0.3;
+    SNAKE.pulse = 0.6;
+    ate = true;
+    haptic("medium");
+    confettiBurst(20);
+  }
+
+  if (!ate) {
     SNAKE.body.pop();
   }
+
   $("#scoreSnake").textContent = SNAKE.score;
   $("#lenSnake").textContent = SNAKE.body.length;
-  $("#spdSnake").textContent = (SNAKE.speed / 8).toFixed(1) + "x";
+  $("#spdSnake").textContent = (SNAKE.speed / SNAKE.baseSpeed).toFixed(1) + "x";
 }
 
 function snakeOver() {
   SNAKE.alive = false;
-  if (SNAKE.score > (state.arcade.bestSnake || 0)) {
-    state.arcade.bestSnake = SNAKE.score;
-    save();
-  }
+  const isNew = snakeSetBest(SNAKE.mode, SNAKE.score);
+  SNAKE.shake = 0.5;
   const ov = $("#snakeOverlay");
   ov.classList.remove("hidden");
-  $("#snakeOverTitle").textContent = "💀 Конец";
-  $("#snakeOverText").innerHTML = `Счёт: <b>${SNAKE.score}</b><br>Лучший: <b>${state.arcade.bestSnake}</b>`;
+
+  // прячем меню режимов на экране смерти
+  $("#snakeModes").style.display = "none";
+  $("#snakeOverTitle").textContent = isNew ? "🏆 Новый рекорд!" : "💀 Конец";
+  $("#snakeOverText").innerHTML = `
+    Режим: <b>${SNAKE_MODES[SNAKE.mode].name}</b><br>
+    Счёт: <b>${SNAKE.score}</b><br>
+    Длина: <b>${SNAKE.body.length}</b><br>
+    Лучший: <b>${snakeGetBest(SNAKE.mode)}</b>`;
   $("#snakeStart").textContent = "🔁 Заново";
+  $("#snakeBestMode").textContent = snakeGetBest(SNAKE.mode);
   haptic("lose");
 }
 
 function snakeRender() {
-  const c = SNAKE.canvas;
   const ctx = SNAKE.ctx;
-  if (!c || !ctx) return;
+  if (!ctx) return;
+  const W = SNAKE.W, H = SNAKE.H;
+  // тряска
+  ctx.save();
+  if (SNAKE.shake > 0) {
+    const m = SNAKE.shake * 6;
+    ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+  }
+  // фон с виньеткой
   ctx.fillStyle = "#0a0a1a";
-  ctx.fillRect(0, 0, SNAKE.W, SNAKE.H);
-  const cw = SNAKE.W / SNAKE.cols;
-  const ch = SNAKE.H / SNAKE.rows;
+  ctx.fillRect(0, 0, W, H);
+  const cw = W / SNAKE.cols;
+  const ch = H / SNAKE.rows;
+
   // grid
   ctx.strokeStyle = "rgba(255,255,255,0.04)";
-  for (let i = 0; i < SNAKE.cols; i++) {
-    ctx.beginPath(); ctx.moveTo(i * cw, 0); ctx.lineTo(i * cw, SNAKE.H); ctx.stroke();
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= SNAKE.cols; i++) {
+    ctx.beginPath(); ctx.moveTo(i * cw, 0); ctx.lineTo(i * cw, H); ctx.stroke();
   }
-  for (let i = 0; i < SNAKE.rows; i++) {
-    ctx.beginPath(); ctx.moveTo(0, i * ch); ctx.lineTo(SNAKE.W, i * ch); ctx.stroke();
+  for (let i = 0; i <= SNAKE.rows; i++) {
+    ctx.beginPath(); ctx.moveTo(0, i * ch); ctx.lineTo(W, i * ch); ctx.stroke();
   }
-  // food
-  ctx.fillStyle = "#f87171";
-  ctx.fillRect(SNAKE.food.x * cw + 2, SNAKE.food.y * ch + 2, cw - 4, ch - 4);
-  // snake
-  for (let i = 0; i < SNAKE.body.length; i++) {
+
+  // walls
+  for (const w of SNAKE.walls) {
+    const x = w.x * cw, y = w.y * ch;
+    const grad = ctx.createLinearGradient(x, y, x + cw, y + ch);
+    grad.addColorStop(0, "#5b3a1d");
+    grad.addColorStop(1, "#3a2410");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.strokeRect(x + 2, y + 2, cw - 4, ch - 4);
+  }
+
+  // food (яблоко с глянцем)
+  if (SNAKE.food) {
+    const f = SNAKE.food;
+    const x = f.x * cw + cw / 2, y = f.y * ch + ch / 2;
+    const r = Math.min(cw, ch) * 0.38;
+    ctx.fillStyle = "#dc2626";
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath(); ctx.arc(x - r * 0.3, y - r * 0.35, r * 0.25, 0, Math.PI * 2); ctx.fill();
+    // черенок
+    ctx.fillStyle = "#65a30d";
+    ctx.fillRect(x - 1, y - r - 4, 2, 4);
+  }
+
+  // bonus food (золотое)
+  if (SNAKE.bonus) {
+    const f = SNAKE.bonus;
+    const x = f.x * cw + cw / 2, y = f.y * ch + ch / 2;
+    const r = Math.min(cw, ch) * 0.42;
+    const flick = 0.7 + 0.3 * Math.sin(performance.now() / 120);
+    ctx.fillStyle = `rgba(255,217,102, ${flick})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#ffb700";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.font = `bold ${Math.floor(r)}px sans-serif`;
+    ctx.fillStyle = "#3d2800";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⭐", x, y);
+  }
+
+  // snake body — закруглённые, с градиентом
+  for (let i = SNAKE.body.length - 1; i >= 0; i--) {
     const s = SNAKE.body[i];
-    ctx.fillStyle = i === 0 ? "#a3e635" : "#65a30d";
-    ctx.fillRect(s.x * cw + 1, s.y * ch + 1, cw - 2, ch - 2);
+    const x = s.x * cw, y = s.y * ch;
+    const isHead = i === 0;
+    const tailRatio = 1 - i / Math.max(1, SNAKE.body.length);
+    const baseColor = isHead ? "#a3e635" : `rgba(${101 + 40 * tailRatio}, ${163}, ${13 + 50 * tailRatio}, 1)`;
+    if (SNAKE.pulse > 0 && isHead) {
+      ctx.fillStyle = "#ffffff";
+    } else {
+      ctx.fillStyle = isHead ? "#a3e635" : "#65a30d";
+    }
+    const pad = 1.5;
+    const rr = 4;
+    const w = cw - pad * 2, h = ch - pad * 2;
+    // round-rect
+    ctx.beginPath();
+    ctx.moveTo(x + pad + rr, y + pad);
+    ctx.lineTo(x + pad + w - rr, y + pad);
+    ctx.quadraticCurveTo(x + pad + w, y + pad, x + pad + w, y + pad + rr);
+    ctx.lineTo(x + pad + w, y + pad + h - rr);
+    ctx.quadraticCurveTo(x + pad + w, y + pad + h, x + pad + w - rr, y + pad + h);
+    ctx.lineTo(x + pad + rr, y + pad + h);
+    ctx.quadraticCurveTo(x + pad, y + pad + h, x + pad, y + pad + h - rr);
+    ctx.lineTo(x + pad, y + pad + rr);
+    ctx.quadraticCurveTo(x + pad, y + pad, x + pad + rr, y + pad);
+    ctx.closePath();
+    ctx.fill();
+
+    // глаза головы
+    if (isHead) {
+      ctx.fillStyle = "#0a0a1a";
+      const cx = x + cw / 2, cy = y + ch / 2;
+      const ex = SNAKE.dir === "left" ? -3 : SNAKE.dir === "right" ? 3 : 0;
+      const ey = SNAKE.dir === "up" ? -3 : SNAKE.dir === "down" ? 3 : 0;
+      const eOff = 3;
+      const perpx = -ey, perpy = ex; // перпендикуляр для глаз
+      ctx.beginPath();
+      ctx.arc(cx + ex * 0.6 + perpx * 0.3, cy + ey * 0.6 + perpy * 0.3, 2, 0, Math.PI * 2);
+      ctx.arc(cx + ex * 0.6 - perpx * 0.3, cy + ey * 0.6 - perpy * 0.3, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+
+  // pause overlay
+  if (SNAKE.paused && SNAKE.alive) {
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = "bold 28px sans-serif";
+    ctx.fillStyle = "#ffd966";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⏸ ПАУЗА", W / 2, H / 2);
   }
 }
 
@@ -2813,78 +3243,142 @@ function snakeLoop(now) {
     SNAKE.raf = null;
     return;
   }
-  const dt = (now - SNAKE.last) / 1000;
+  let dt = (now - SNAKE.last) / 1000;
   SNAKE.last = now;
-  if (SNAKE.alive) {
+  if (dt > 0.2) dt = 0.2;
+  if (SNAKE.alive && !SNAKE.paused) {
     SNAKE.acc += dt * SNAKE.speed;
     while (SNAKE.acc >= 1) {
       SNAKE.acc -= 1;
       snakeStep();
       if (!SNAKE.alive) break;
     }
+    if (SNAKE.bonus) {
+      SNAKE.bonusLife -= dt;
+      if (SNAKE.bonusLife <= 0) SNAKE.bonus = null;
+    }
   }
+  if (SNAKE.shake > 0) SNAKE.shake = Math.max(0, SNAKE.shake - dt);
+  if (SNAKE.pulse > 0) SNAKE.pulse = Math.max(0, SNAKE.pulse - dt);
   snakeRender();
   SNAKE.raf = requestAnimationFrame(snakeLoop);
 }
 
-let snakeInited = false;
+function snakeRebuildOverlay() {
+  // показывает стартовый экран с режимами
+  $("#snakeModes").style.display = "grid";
+  $("#snakeOverTitle").textContent = SNAKE_MODES[SNAKE.mode].title;
+  $("#snakeOverText").textContent = SNAKE_MODES[SNAKE.mode].desc + " Управление — стрелки, свайпы или кнопки.";
+  $("#snakeStart").textContent = "▶️ Старт";
+  $("#snakeBestMode").textContent = snakeGetBest(SNAKE.mode);
+  $("#snakeOverlay").classList.remove("hidden");
+}
+
 function initSnake() {
-  if (snakeInited) return;
-  snakeInited = true;
+  if (SNAKE.inited) return;
+  SNAKE.inited = true;
   SNAKE.canvas = $("#snakeCanvas");
   SNAKE.ctx = SNAKE.canvas.getContext("2d");
+
   const resize = () => {
     const arena = SNAKE.canvas.parentElement;
     const rect = arena.getBoundingClientRect();
     SNAKE.W = rect.width;
     SNAKE.H = rect.height;
-    SNAKE.canvas.width = SNAKE.W;
-    SNAKE.canvas.height = SNAKE.H;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    SNAKE.canvas.width = Math.floor(rect.width * dpr);
+    SNAKE.canvas.height = Math.floor(rect.height * dpr);
+    SNAKE.canvas.style.width = rect.width + "px";
+    SNAKE.canvas.style.height = rect.height + "px";
+    SNAKE.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     snakeRender();
   };
-  window.addEventListener("resize", resize);
+  window.addEventListener("resize", () => {
+    if ($("#screen-snake").classList.contains("open")) resize();
+  });
   setTimeout(resize, 50);
 
+  // выбор режимов
+  $$("#snakeModes .snake-mode").forEach(b => {
+    b.addEventListener("click", () => {
+      $$("#snakeModes .snake-mode").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      SNAKE.mode = b.dataset.mode;
+      snakeRebuildOverlay();
+      haptic("light");
+    });
+  });
+
   $("#snakeStart").addEventListener("click", snakeNew);
+  $("#snakePauseBtn").addEventListener("click", () => {
+    if (!SNAKE.alive) return;
+    SNAKE.paused = !SNAKE.paused;
+    $("#snakePauseBtn").textContent = SNAKE.paused ? "▶" : "⏸";
+    haptic("light");
+  });
+
   $$(".snake-key").forEach(b => b.addEventListener("click", () => {
     SNAKE.nextDir = b.dataset.snakeDir;
     haptic("light");
   }));
+
   document.addEventListener("keydown", (e) => {
     if (!$("#screen-snake").classList.contains("open")) return;
-    const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
-    if (map[e.key]) SNAKE.nextDir = map[e.key];
+    const map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+                  w: "up", s: "down", a: "left", d: "right" };
+    if (map[e.key]) { SNAKE.nextDir = map[e.key]; e.preventDefault(); }
+    else if (e.key === " ") {
+      if (SNAKE.alive) {
+        SNAKE.paused = !SNAKE.paused;
+        $("#snakePauseBtn").textContent = SNAKE.paused ? "▶" : "⏸";
+      }
+    }
   });
-  // свайпы
+
+  // свайпы по канвасу
+  let ts = null;
   SNAKE.canvas.addEventListener("touchstart", (e) => {
     const t = e.touches[0];
-    SNAKE._ts = { x: t.clientX, y: t.clientY };
+    ts = { x: t.clientX, y: t.clientY };
   }, { passive: true });
+  SNAKE.canvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+  }, { passive: false });
   SNAKE.canvas.addEventListener("touchend", (e) => {
-    if (!SNAKE._ts) return;
+    if (!ts) return;
     const t = e.changedTouches[0];
-    const dx = t.clientX - SNAKE._ts.x, dy = t.clientY - SNAKE._ts.y;
+    const dx = t.clientX - ts.x, dy = t.clientY - ts.y;
+    ts = null;
     if (Math.abs(dx) < 16 && Math.abs(dy) < 16) return;
     if (Math.abs(dx) > Math.abs(dy)) SNAKE.nextDir = dx > 0 ? "right" : "left";
     else SNAKE.nextDir = dy > 0 ? "down" : "up";
   });
+
+  // первый ресайз (на случай если контент уже в дом)
+  resize();
 }
 
 function openSnake() {
   initSnake();
   openScreen("snake");
-  // не стартуем сразу — оверлей
   setTimeout(() => {
-    SNAKE.W = SNAKE.canvas.parentElement.clientWidth;
-    SNAKE.H = SNAKE.canvas.parentElement.clientHeight;
-    SNAKE.canvas.width = SNAKE.W;
-    SNAKE.canvas.height = SNAKE.H;
+    const arena = SNAKE.canvas.parentElement;
+    const rect = arena.getBoundingClientRect();
+    SNAKE.W = rect.width;
+    SNAKE.H = rect.height;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    SNAKE.canvas.width = Math.floor(rect.width * dpr);
+    SNAKE.canvas.height = Math.floor(rect.height * dpr);
+    SNAKE.canvas.style.width = rect.width + "px";
+    SNAKE.canvas.style.height = rect.height + "px";
+    SNAKE.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (!SNAKE.raf) {
       SNAKE.last = performance.now();
       SNAKE.raf = requestAnimationFrame(snakeLoop);
     }
+    snakeRebuildOverlay();
     snakeRender();
-    $("#bestSnake").textContent = state.arcade.bestSnake || 0;
+    $("#bestSnake").textContent = snakeGetBest(SNAKE.mode);
   }, 50);
 }
 

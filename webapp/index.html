@@ -103,13 +103,13 @@
       <div class="section-sub">Игры просто для удовольствия. Прогресс копится отдельно от казино.</div>
       <div class="games-grid">
         <div class="game-card gc-rogue" data-open="rogue">
-          <div><div class="ico">🗡️</div><div class="name">Подземелье</div><div class="desc">Рогалик: волны врагов, боссы, прокачка</div></div>
+          <div><div class="ico">🗡️</div><div class="name">Подземелье</div><div class="desc">Рогалик: 20 этажей, боссы, скиллы</div></div>
         </div>
         <div class="game-card gc-2048" data-open="game2048">
           <div><div class="ico">🔢</div><div class="name">2048</div><div class="desc">Свайпай и сливай числа</div></div>
         </div>
         <div class="game-card gc-snake" data-open="snake">
-          <div><div class="ico">🐍</div><div class="name">Змейка</div><div class="desc">Классика, ешь яблоки</div></div>
+          <div><div class="ico">🐍</div><div class="name">Змейка</div><div class="desc">4 режима: Classic / NoWall / Speed / Maze</div></div>
         </div>
       </div>
 
@@ -498,10 +498,11 @@
         <div class="rogue-menu" id="rogueMenuStart">
           <h2>🗡️ Подземелье</h2>
           <p>Двигайся джойстиком, атаки идут сами.<br>
-          Убивай монстров, повышай уровень, выбирай прокачку.<br>
-          На 5-м, 10-м и 15-м этажах — боссы.</p>
+          Кнопкой <b>⚡</b> справа кастуй активный скилл.<br>
+          Убивай монстров, прокачивайся, дойди до 20 этажа и одолей Титана.</p>
           <div class="rogue-meta" id="rogueMetaPanel"></div>
           <button class="btn-primary" id="rogueStartBtn">⚔️ В путь</button>
+          <button class="btn-secondary" id="rogueOpenMetaBtn" style="width:100%; margin-top:8px;">🌟 Мета-прокачка</button>
         </div>
         <div class="rogue-menu hidden" id="rogueMenuLevelUp">
           <h2>⭐ Новый уровень!</h2>
@@ -515,6 +516,7 @@
             За забег копятся <b>Осколки душ</b> для постоянной прокачки.
           </p>
           <button class="btn-primary" id="rogueRestartBtn">🔁 Снова</button>
+          <button class="btn-secondary" id="rogueDeadMetaBtn" style="width:100%; margin-top:8px;">🌟 Мета-прокачка</button>
         </div>
         <div class="rogue-menu hidden" id="rogueMenuMeta">
           <h2>🌟 Мета-прокачка</h2>
@@ -523,13 +525,18 @@
           <button class="btn-secondary" id="rogueMetaClose" style="width:100%; margin-top:8px;">Назад</button>
         </div>
       </div>
+      <!-- HUD-кнопка скилла поверх арены -->
+      <button class="rogue-skill-btn" id="rogueSkillBtn">
+        <span class="ico" id="rogueSkillIco">⚡</span>
+        <span class="cd" id="rogueSkillCd"></span>
+      </button>
     </div>
 
     <div class="rogue-controls">
       <div class="rogue-stick" id="rogueStick">
         <div class="rogue-stick-knob" id="rogueStickKnob"></div>
       </div>
-      <button class="rogue-btn" id="rogueMetaBtn">🌟 Мета</button>
+      <button class="rogue-btn" id="roguePauseBtn">⏸ Пауза</button>
     </div>
   </div>
 </div>
@@ -572,13 +579,39 @@
     </div>
     <div class="snake-arena">
       <canvas id="snakeCanvas"></canvas>
-      <div class="snake-overlay hidden" id="snakeOverlay">
-        <div>
-          <h2 id="snakeOverTitle">Готов?</h2>
-          <p id="snakeOverText">Управляй стрелками или свайпами.</p>
+      <div class="snake-overlay" id="snakeOverlay">
+        <div class="snake-overlay-inner">
+          <h2 id="snakeOverTitle">🐍 Змейка</h2>
+          <p id="snakeOverText">Выбери режим и нажми старт. Управление — стрелки, свайпы или кнопки.</p>
+
+          <div class="snake-modes" id="snakeModes">
+            <button class="snake-mode active" data-mode="classic">
+              <div class="m-ico">🟩</div>
+              <div class="m-name">Classic</div>
+              <div class="m-desc">Стандартная. Стены = смерть.</div>
+            </button>
+            <button class="snake-mode" data-mode="nowall">
+              <div class="m-ico">🌀</div>
+              <div class="m-name">No Walls</div>
+              <div class="m-desc">Стены телепортируют на другую сторону.</div>
+            </button>
+            <button class="snake-mode" data-mode="speed">
+              <div class="m-ico">⚡</div>
+              <div class="m-name">Speed</div>
+              <div class="m-desc">Быстро + ускорение от еды. Ставка x2.</div>
+            </button>
+            <button class="snake-mode" data-mode="maze">
+              <div class="m-ico">🧱</div>
+              <div class="m-name">Maze</div>
+              <div class="m-desc">Стены внутри арены. Бонусные яблоки.</div>
+            </button>
+          </div>
+
           <button class="btn-primary" id="snakeStart">▶️ Старт</button>
+          <div class="snake-best-line">🏆 Рекорд режима: <b id="snakeBestMode">0</b></div>
         </div>
       </div>
+      <button class="snake-pause-btn" id="snakePauseBtn" title="Пауза">⏸</button>
     </div>
     <div class="snake-pad">
       <button class="snake-key" data-snake-dir="up">▲</button>
