@@ -134,7 +134,22 @@ function showBigWin(amount, gameTitle, opts = {}) {
 // Все изменения баланса идут через сервер (если мы внутри Telegram).
 // Локально (вне TG) — фолбек в localStorage.
 const API = window.GameBuddyAPI;
-const SERVER = !!(API && API.isTelegram);
+// SERVER = "мы можем дёргать API". Пере-проверяется первым ответом /api/me.
+// Это let, а не const: нужно различать «мы вне TG» и «TG есть, но сервер лёг».
+let SERVER = !!(API && API.isTelegram);
+// SERVER_OK = последний живой ответ сервера. Лидерборд/магазин показывают
+// сообщение об оффлайн-режиме, ориентируясь на эту переменную.
+let SERVER_OK = SERVER;
+// Запомним, было ли в ходе сессии хоть раз 401 — чтобы корректно подсказать.
+let SERVER_AUTH_FAILED = false;
+
+function _markServerError(r) {
+  // r — это ответ http() из api.js. Помечает причину последней ошибки сервера.
+  if (!r) return;
+  if (r.status === 401) { SERVER_AUTH_FAILED = true; SERVER_OK = false; return; }
+  if (r.error === "network" || r.status === 0 || r.status >= 500) { SERVER_OK = false; return; }
+}
+function _markServerOk() { SERVER_OK = true; }
 
 let _serverSyncQueue = Promise.resolve();
 function _enqueue(fn) { _serverSyncQueue = _serverSyncQueue.then(fn).catch(()=>{}); return _serverSyncQueue; }
@@ -3433,6 +3448,7 @@ async function syncFromServer() {
   try {
     const r = await API.me();
     if (r.ok) {
+      _markServerOk();
       const u = r.data.user;
       state.balance = u.balance;
       window._serverUser = u;
@@ -3447,8 +3463,22 @@ async function syncFromServer() {
       refreshBalance();
       renderHome();
       save();
+    } else {
+      _markServerError(r);
+      // Без видимой ошибки баланс «висит» из localStorage и игрок не понимает,
+      // почему монеты не сохраняются.
+      if (r.status === 401) {
+        toast("Не удалось авторизоваться. Открой казино заново через кнопку у бота.", "lose", 3500);
+      } else if (r.error === "network" || r.status === 0) {
+        toast("Сервер недоступен. Прогресс не сохраняется.", "lose", 3500);
+      } else if (r.status >= 500) {
+        toast("Ошибка на сервере. Попробуй позже.", "lose", 3500);
+      }
     }
-  } catch (e) {}
+  } catch (e) {
+    SERVER_OK = false;
+    toast("Сеть недоступна. Прогресс не сохраняется.", "lose", 3500);
+  }
 }
 
 // ============================================================
@@ -3483,7 +3513,16 @@ async function renderShop() {
   if (!_shopCatalog) {
     grid.innerHTML = `<div class="shop-loading">Загружаю каталог...</div>`;
     const r = await API.shopList();
-    if (!r.ok) { grid.innerHTML = `<div class="shop-loading">Ошибка загрузки</div>`; return; }
+    if (!r.ok) {
+      _markServerError(r);
+      let msg = "Ошибка загрузки";
+      if (r.status === 401) msg = "Не удалось авторизоваться.<br>Открой казино заново через кнопку у бота.";
+      else if (r.error === "network" || r.status === 0) msg = "Сервер недоступен. Попробуй позже.";
+      else if (r.status >= 500) msg = "Сервер вернул ошибку. Попробуй позже.";
+      grid.innerHTML = `<div class="shop-loading">${msg}</div>`;
+      return;
+    }
+    _markServerOk();
     _shopCatalog = r.data.items;
   }
   grid.innerHTML = "";
@@ -3589,7 +3628,20 @@ async function renderLeaderboard() {
   }
   list.innerHTML = `<div class="lb-loading">Загружаю...</div>`;
   const r = await API.leaderboard(_lbMetric, 50);
-  if (!r.ok) { list.innerHTML = `<div class="lb-loading">Ошибка</div>`; return; }
+  if (!r.ok) {
+    _markServerError(r);
+    let msg = "Ошибка";
+    if (r.status === 401) {
+      msg = "Не удалось авторизоваться.<br>Открой казино заново через кнопку у бота.";
+    } else if (r.error === "network" || r.status === 0) {
+      msg = "Сервер недоступен. Попробуй позже.";
+    } else if (r.status >= 500) {
+      msg = "Сервер вернул ошибку. Попробуй позже.";
+    }
+    list.innerHTML = `<div class="lb-loading">${msg}</div>`;
+    return;
+  }
+  _markServerOk();
   const items = r.data.items || [];
   if (items.length === 0) { list.innerHTML = `<div class="lb-loading">Пока пусто. Будь первым!</div>`; return; }
   const valueOf = (x) => {
