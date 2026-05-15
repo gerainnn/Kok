@@ -62,7 +62,7 @@ def main_menu(public_url: str | None) -> ReplyKeyboardMarkup:
     if public_url:
         rows.insert(
             0,
-            [KeyboardButton(text="⭐ Поймай звезду", web_app=WebAppInfo(url=public_url))],
+            [KeyboardButton(text="🎰 Открыть Казино", web_app=WebAppInfo(url=public_url))],
         )
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -129,9 +129,11 @@ async def start_cmd(msg: Message, state: FSMContext) -> None:
     await state.clear()
     await msg.answer(
         f"<b>Привет, {msg.from_user.first_name}!</b> 👋\n\n"
-        "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n"
-        "Сыграем? Нажми «🎮 Игры» или открой <b>⭐ Поймай звезду</b> "
-        "(встроенный Web App с физикой и таймером).\n\n"
+        "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n\n"
+        "🎰 <b>Жми «Открыть Казино»</b> — там целый Web App: слоты, рулетка, "
+        "crash, mines, кейсы с инвентарём, колесо удачи, coinflip, кликер с прокачкой "
+        "и виртуальная валюта <b>GameCoins</b>.\n\n"
+        "🎮 А «Игры» — это мини-игры прямо в чате (крестики-нолики, виселица, викторина и др.)\n\n"
         "Команды: /games /quiz /dice /help",
         reply_markup=main_menu(PUBLIC_URL),
     )
@@ -423,12 +425,42 @@ async def rng_step(cb: CallbackQuery) -> None:
 
 
 # ---------- web app data ----------
+GAME_TITLES = {
+    "slots": "🎰 Слоты",
+    "roulette": "🎯 Рулетка",
+    "crash": "🚀 Crash",
+    "mines": "💣 Mines",
+    "wheel": "🎡 Колесо удачи",
+    "coinflip": "🪙 Coinflip",
+    "case_bronze": "📦 Бронзовый кейс",
+    "case_silver": "🎁 Серебряный кейс",
+    "case_gold": "🏆 Золотой кейс",
+    "case_diamond": "💎 Алмазный кейс",
+}
+
+
 @router.message(F.web_app_data)
 async def webapp_data(msg: Message) -> None:
     try:
         data = json.loads(msg.web_app_data.data)
     except Exception:
-        data = {"raw": msg.web_app_data.data}
+        await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
+        return
+
+    # биг-вины из казино
+    if data.get("type") == "big_win":
+        amount = int(data.get("amount", 0))
+        balance = int(data.get("balance", 0))
+        game = GAME_TITLES.get(data.get("game", ""), data.get("game", "игра"))
+        emoji = "🎰🎉" if amount >= 10000 else "🤑" if amount >= 5000 else "🔥"
+        await msg.answer(
+            f"{emoji} <b>БОЛЬШОЙ ВЫИГРЫШ!</b>\n"
+            f"{game} принёс тебе <b>+{amount:,}</b> 🪙\n"
+            f"Баланс: <b>{balance:,}</b>".replace(",", " ")
+        )
+        return
+
+    # legacy: catch_star
     if data.get("game") == "catch_star":
         score = data.get("score", 0)
         comment = (
@@ -437,8 +469,9 @@ async def webapp_data(msg: Message) -> None:
             else "✨ Тренируйся, всё впереди!"
         )
         await msg.answer(f"⭐ Твой результат: <b>{score}</b>\n{comment}")
-    else:
-        await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
+        return
+
+    await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
 
 
 # ---------- aiohttp: отдаём webapp ----------
