@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
-<meta name="theme-color" content="#07071a" />
+<meta name="theme-color" content="#050510" />
 <title>GameBuddy Casino</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="stylesheet" href="/static/style.css?v=2" />
+<link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
 <div class="stars"></div>
@@ -18,28 +18,31 @@
       <span class="coin"></span>
       <span class="amount" id="balance">0</span>
     </div>
-    <button class="daily-btn" id="dailyBtn">🎁 Бонус</button>
+    <button class="daily-btn" id="dailyBtn">+500</button>
   </header>
 
   <!-- CONTENT -->
   <main class="content">
 
-    <!-- TAP -->
-    <section class="page active" data-page="tap">
+    <!-- SHOP (was Tap) -->
+    <section class="page active" data-page="shop">
+      <div class="section-title">🎁 Магазин подарков</div>
+      <div class="section-sub">Обменяй монеты на реальные подарки для Telegram. После покупки мы свяжемся с тобой!</div>
+      <div class="shop-grid" id="shopGrid"></div>
+      <div style="margin-top: 20px;">
+        <div class="section-title" style="font-size:18px;">👆 Кликер</div>
+        <div class="section-sub">Зарабатывай монеты кликами</div>
+      </div>
       <div class="tap-wrap">
         <div class="tap-info">
-          <div class="label">Кликай по монетке и зарабатывай</div>
           <div class="value" id="tapPerClick">+1 за тап</div>
         </div>
         <div class="tap-coin" id="tapCoin">$</div>
-
         <div class="tap-stat">
           <div class="tap-stat-card"><div class="label">Тапов</div><div class="value" id="tapCount">0</div></div>
           <div class="tap-stat-card"><div class="label">Заработано</div><div class="value" id="tapEarned">0</div></div>
         </div>
-
         <div class="upgrades">
-          <div class="section-title" style="font-size:18px; margin-top: 24px;">⚡ Улучшения</div>
           <div id="upgradeList"></div>
         </div>
       </div>
@@ -47,14 +50,14 @@
 
     <!-- GAMES -->
     <section class="page" data-page="games">
-      <div class="section-title">🎰 Игры</div>
-      <div class="section-sub">Выбирай и играй на GameCoins</div>
+      <div class="section-title">🎰 Казино</div>
+      <div class="section-sub">Испытай удачу и умножь свои GameCoins</div>
       <div class="games-grid">
         <div class="game-card gc-slots" data-open="slots">
-          <div><div class="ico">🎰</div><div class="name">Слоты</div><div class="desc">3 барабана, jackpot 777</div></div>
+          <div><div class="ico">🎰</div><div class="name">Слоты</div><div class="desc">Jackpot x30</div></div>
         </div>
         <div class="game-card gc-roulette" data-open="roulette">
-          <div><div class="ico">🎯</div><div class="name">Рулетка</div><div class="desc">Red / Black / Number</div></div>
+          <div><div class="ico">🎯</div><div class="name">Рулетка</div><div class="desc">Red / Black / Zero</div></div>
         </div>
         <div class="game-card gc-crash" data-open="crash">
           <div><div class="ico">🚀</div><div class="name">Crash</div><div class="desc">Успей забрать!</div></div>
@@ -66,7 +69,7 @@
           <div><div class="ico">🎡</div><div class="name">Колесо</div><div class="desc">До x10</div></div>
         </div>
         <div class="game-card gc-coinflip" data-open="coinflip">
-          <div><div class="ico">🪙</div><div class="name">Coinflip</div><div class="desc">Орёл или решка x2</div></div>
+          <div><div class="ico">🪙</div><div class="name">Coinflip</div><div class="desc">Орёл или решка</div></div>
         </div>
       </div>
     </section>
@@ -74,47 +77,40 @@
     <!-- CASES -->
     <section class="page" data-page="cases">
       <div class="section-title">📦 Кейсы</div>
-      <div class="section-sub">Открой кейс и получи случайный приз. Можно открывать сразу несколько.</div>
+      <div class="section-sub">Открой кейс и получи случайный приз в инвентарь</div>
       <div class="case-list" id="caseList"></div>
 
-      <div class="section-title" style="font-size:18px; margin-top: 24px;">🎒 Инвентарь</div>
+      <div class="section-title" style="font-size:18px; margin-top: 20px;">🎒 Инвентарь</div>
       <div class="inv-tabs">
         <button class="inv-tab active" data-inv-tab="all">Все</button>
-        <button class="inv-tab" data-inv-tab="common">⚪ Common</button>
-        <button class="inv-tab" data-inv-tab="rare">🔵 Rare+</button>
-        <button class="inv-tab" data-inv-tab="legend">🟡 Legend+</button>
+        <button class="inv-tab" data-inv-tab="common">Common</button>
+        <button class="inv-tab" data-inv-tab="rare">Rare+</button>
+        <button class="inv-tab" data-inv-tab="legend">Legend+</button>
       </div>
-
       <div class="bulk-sell-row">
         <button class="bulk-btn" data-bulk="common">Продать common</button>
-        <button class="bulk-btn" data-bulk="rare-and-below">Продать rare и ниже</button>
+        <button class="bulk-btn" data-bulk="rare-and-below">Продать rare-</button>
         <button class="bulk-btn danger" data-bulk="all">Продать всё</button>
       </div>
-
-      <button class="btn-primary" id="openContractBtn" style="margin-bottom: 10px;">
-        🔧 Контракт улучшения (5 → 1)
+      <button class="btn-secondary" id="openContractBtn" style="width:100%; margin-bottom: 10px;">
+        🔧 Контракт (5 → 1)
       </button>
       <div class="inv-grid" id="invGrid"></div>
     </section>
 
-    <!-- ARCADE -->
-    <section class="page" data-page="arcade">
-      <div class="section-title">🎮 Аркада</div>
-      <div class="section-sub">Игры просто для удовольствия. Прогресс копится отдельно от казино.</div>
-      <div class="games-grid">
-        <div class="game-card gc-rogue" data-open="rogue">
-          <div><div class="ico">🗡️</div><div class="name">Подземелье</div><div class="desc">Рогалик: 20 этажей, боссы, скиллы</div></div>
-        </div>
-        <div class="game-card gc-2048" data-open="game2048">
-          <div><div class="ico">🔢</div><div class="name">2048</div><div class="desc">Свайпай и сливай числа</div></div>
-        </div>
-        <div class="game-card gc-snake" data-open="snake">
-          <div><div class="ico">🐍</div><div class="name">Змейка</div><div class="desc">4 режима: Classic / NoWall / Speed / Maze</div></div>
-        </div>
+    <!-- LEADERBOARD -->
+    <section class="page" data-page="leaders">
+      <div class="section-title">🏆 Лидерборд</div>
+      <div class="section-sub">Лучшие игроки GameBuddy</div>
+      <div class="lb-tabs" id="lbTabs">
+        <button class="lb-tab active" data-lb="balance">💰 Баланс</button>
+        <button class="lb-tab" data-lb="wagered">🎰 Ставки</button>
+        <button class="lb-tab" data-lb="wins">🏅 Победы</button>
+        <button class="lb-tab" data-lb="cases">📦 Кейсы</button>
       </div>
-
-      <div class="section-title" style="font-size:18px; margin-top:20px;">🏆 Рекорды</div>
-      <div class="stat-grid" id="arcadeRecords"></div>
+      <div class="lb-list" id="lbList">
+        <div class="inv-empty">Загрузка...</div>
+      </div>
     </section>
 
     <!-- PROFILE -->
@@ -130,20 +126,37 @@
       <div class="section-title" style="font-size:18px;">📊 Статистика</div>
       <div class="stat-grid" id="statGrid"></div>
 
-      <button class="btn-secondary" id="resetBtn" style="width:100%; margin-top: 8px;">♻️ Сбросить прогресс</button>
+      <div class="section-title" style="font-size:18px; margin-top:14px;">🎮 Аркада</div>
+      <div class="games-grid" style="margin-bottom: 14px;">
+        <div class="game-card gc-rogue" data-open="rogue">
+          <div><div class="ico">🗡️</div><div class="name">Подземелье</div><div class="desc">Рогалик 20 этажей</div></div>
+        </div>
+        <div class="game-card gc-2048" data-open="game2048">
+          <div><div class="ico">🔢</div><div class="name">2048</div><div class="desc">Сливай числа</div></div>
+        </div>
+        <div class="game-card gc-snake" data-open="snake">
+          <div><div class="ico">🐍</div><div class="name">Змейка</div><div class="desc">4 режима</div></div>
+        </div>
+      </div>
+
+      <div class="section-title" style="font-size:18px;">🏆 Рекорды аркады</div>
+      <div class="stat-grid" id="arcadeRecords"></div>
+
+      <button class="btn-secondary" id="resetBtn" style="width:100%; margin-top: 12px;">♻️ Сбросить прогресс</button>
     </section>
 
   </main>
 
   <!-- NAV -->
   <nav class="nav nav-5">
-    <button class="nav-item active" data-nav="tap"><span class="ico">👆</span><span>Тап</span></button>
+    <button class="nav-item active" data-nav="shop"><span class="ico">🎁</span><span>Магазин</span></button>
     <button class="nav-item" data-nav="games"><span class="ico">🎰</span><span>Казино</span></button>
     <button class="nav-item" data-nav="cases"><span class="ico">📦</span><span>Кейсы</span></button>
-    <button class="nav-item" data-nav="arcade"><span class="ico">🎮</span><span>Аркада</span></button>
+    <button class="nav-item" data-nav="leaders"><span class="ico">🏆</span><span>Топ</span></button>
     <button class="nav-item" data-nav="profile"><span class="ico">👤</span><span>Профиль</span></button>
   </nav>
 </div>
+
 
 <!-- ============ SCREENS (game modals) ============ -->
 
@@ -174,15 +187,13 @@
       </div>
     </div>
     <button class="btn-primary" id="slotsSpin">🎰 Крутить</button>
-
     <div class="slots-paytable" style="margin-top:14px;">
-      <div class="row"><span>7️⃣ 7️⃣ 7️⃣ Jackpot</span><span class="pay">x50</span></div>
-      <div class="row"><span>💎 💎 💎</span><span class="pay">x20</span></div>
-      <div class="row"><span>⭐ ⭐ ⭐</span><span class="pay">x10</span></div>
-      <div class="row"><span>🍀 🍀 🍀</span><span class="pay">x7</span></div>
-      <div class="row"><span>🍒 🍒 🍒</span><span class="pay">x5</span></div>
-      <div class="row"><span>🍋 🍋 🍋</span><span class="pay">x3</span></div>
-      <div class="row"><span>любые 2 одинаковые</span><span class="pay">x1.5</span></div>
+      <div class="row"><span>7️⃣ 7️⃣ 7️⃣</span><span class="pay">x30</span></div>
+      <div class="row"><span>💎 💎 💎</span><span class="pay">x12</span></div>
+      <div class="row"><span>⭐ ⭐ ⭐</span><span class="pay">x6</span></div>
+      <div class="row"><span>🍀 🍀 🍀</span><span class="pay">x4</span></div>
+      <div class="row"><span>🍒 🍒 🍒</span><span class="pay">x3</span></div>
+      <div class="row"><span>🍋 🍋 🍋</span><span class="pay">x2</span></div>
     </div>
   </div>
 </div>
@@ -200,7 +211,6 @@
       <div class="roulette-wheel" id="roulWheel"></div>
     </div>
     <div class="roulette-result" id="roulResult">—</div>
-
     <div class="roulette-bets" id="roulBets">
       <button class="roul-bet" data-color="red" data-rbet="red">Красное x2</button>
       <button class="roul-bet" data-color="black" data-rbet="black">Чёрное x2</button>
@@ -212,7 +222,6 @@
       <button class="roul-bet" data-rbet="d1">1-12 x3</button>
       <button class="roul-bet" data-rbet="d2">13-24 x3</button>
     </div>
-
     <div class="bet-panel">
       <div class="bet-row">
         <div class="bet-label">Ставка</div>
@@ -267,7 +276,7 @@
   </div>
   <div class="screen-body">
     <div class="mines-stats">
-      <div class="mines-stat-card"><div class="label">Текущий x</div><div class="value" id="minesMult">1.00x</div></div>
+      <div class="mines-stat-card"><div class="label">Множитель</div><div class="value" id="minesMult">1.00x</div></div>
       <div class="mines-stat-card"><div class="label">Выигрыш</div><div class="value" id="minesWin">0</div></div>
       <div class="mines-stat-card"><div class="label">Найдено</div><div class="value" id="minesOpen">0</div></div>
     </div>
@@ -292,7 +301,7 @@
   </div>
 </div>
 
-<!-- WHEEL OF FORTUNE -->
+<!-- WHEEL -->
 <div class="screen" id="screen-wheel">
   <div class="screen-header">
     <button class="back-btn" data-close>‹</button>
@@ -351,6 +360,7 @@
   </div>
 </div>
 
+
 <!-- CASE -->
 <div class="screen" id="screen-case">
   <div class="screen-header">
@@ -364,13 +374,11 @@
       <div class="case-roll-strip" id="caseRollStrip"></div>
     </div>
     <div id="caseResultBox"></div>
-
     <div class="case-multi" id="caseMulti">
       <button class="multi-btn active" data-multi="1">x1</button>
       <button class="multi-btn" data-multi="5">x5</button>
       <button class="multi-btn" data-multi="10">x10</button>
     </div>
-
     <div class="case-paytable" id="casePaytable"></div>
     <button class="btn-primary" id="caseOpenBtn">📦 Открыть</button>
   </div>
@@ -391,7 +399,7 @@
       <button class="sell-btn" id="itemSellAll">Продать все</button>
     </div>
     <button class="btn-secondary" id="itemUpgradeBtn" style="width:100%; margin-top: 10px;">
-      ⚒️ Апгрейд (попробовать улучшить)
+      ⚒️ Апгрейд предмета
     </button>
   </div>
 </div>
@@ -400,16 +408,13 @@
 <div class="screen" id="screen-upgrade">
   <div class="screen-header">
     <button class="back-btn" data-close>‹</button>
-    <div class="title">⚒️ Апгрейд предмета</div>
+    <div class="title">⚒️ Апгрейд</div>
     <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
   </div>
   <div class="screen-body">
     <div class="upg-info">
-      Положи предмет. Выбери цель — или другой предмет, или просто множитель цены.
-      Шанс успеха зависит от того, насколько цель дороже исходника.
-      При успехе ты получаешь цель, при провале — теряешь предмет.
+      Положи предмет и выбери цель или множитель. Шанс зависит от разницы стоимости. Провал = потеря предмета.
     </div>
-
     <div class="upg-slots">
       <div class="upg-slot" id="upgSrc">
         <div class="upg-slot-label">Исходник</div>
@@ -421,19 +426,14 @@
         <div class="upg-slot-content" id="upgDstContent">?</div>
       </div>
     </div>
-
     <div class="upg-anim" id="upgAnim" style="display:none;">
       <div class="upg-progress" id="upgProgress"></div>
       <div class="upg-anim-text" id="upgAnimText">Куём...</div>
     </div>
-
     <div class="upg-mults" id="upgMults"></div>
-
     <div class="upg-info" id="upgChanceInfo" style="display:none;"></div>
-
     <button class="btn-primary" id="upgRunBtn" disabled>Выбери исходник</button>
-
-    <div style="font-weight:700; margin: 14px 0 8px;">Твой инвентарь:</div>
+    <div style="font-weight:700; margin: 14px 0 8px; font-size:14px;">Твой инвентарь:</div>
     <div class="contract-pick" id="upgPick"></div>
   </div>
 </div>
@@ -442,7 +442,7 @@
 <div class="screen" id="screen-contract">
   <div class="screen-header">
     <button class="back-btn" data-close>‹</button>
-    <div class="title">🔧 Контракт улучшения</div>
+    <div class="title">🔧 Контракт</div>
     <div class="balance-mini"><span class="coin"></span> <span data-balance>0</span></div>
   </div>
   <div class="screen-body">
@@ -452,23 +452,35 @@
     <div class="contract-slots" id="contractSlots"></div>
     <div class="contract-info" id="contractStats" style="display:none;"></div>
     <button class="btn-primary" id="contractRunBtn" disabled>Выбери 5 предметов</button>
-    <div style="font-weight:700; margin: 14px 0 8px;">Твой инвентарь:</div>
+    <div style="font-weight:700; margin: 14px 0 8px; font-size:14px;">Твой инвентарь:</div>
     <div class="contract-pick" id="contractPick"></div>
   </div>
 </div>
 
-<!-- BIG WIN MODAL (внутри приложения, не выкидывает!) -->
+<!-- BIG WIN MODAL -->
 <div class="modal-back" id="bigWinModal">
   <div class="modal-card">
     <div class="ico" id="bwIco">🎰</div>
     <div class="ttl" id="bwTitle">Большой выигрыш!</div>
     <div class="sub" id="bwSub">— игра —</div>
-    <div class="amount" id="bwAmount">+0 🪙</div>
+    <div class="amount" id="bwAmount">+0</div>
     <button class="btn-primary" id="bwClose">Класс! 🔥</button>
   </div>
 </div>
 
-<!-- ROGUELIKE: ПОДЗЕМЕЛЬЕ -->
+<!-- SHOP CONFIRM MODAL -->
+<div class="modal-back" id="shopModal">
+  <div class="modal-card">
+    <div class="ico" id="smIco">🎁</div>
+    <div class="ttl" id="smTitle">Купить подарок?</div>
+    <div class="sub" id="smDesc">Описание</div>
+    <div class="amount" id="smPrice">0</div>
+    <button class="btn-primary" id="smBuy">Подтвердить покупку</button>
+    <button class="btn-secondary" id="smCancel" style="width:100%; margin-top:8px;">Отмена</button>
+  </div>
+</div>
+
+<!-- ROGUELIKE -->
 <div class="screen" id="screen-rogue">
   <div class="screen-header">
     <button class="back-btn" id="rogueBack">‹</button>
@@ -491,14 +503,12 @@
         <span>💰 <span id="rogueGold">0</span></span>
       </div>
     </div>
-
     <div class="rogue-arena">
       <canvas id="rogueCanvas"></canvas>
       <div class="rogue-overlay" id="rogueOverlay">
         <div class="rogue-menu" id="rogueMenuStart">
           <h2>🗡️ Подземелье</h2>
-          <p>Джойстик = движение. Атака автоматическая.<br>
-          Кнопка ⚡ = активный скилл. Цель — 20 этаж.</p>
+          <p>Джойстик = движение. Атака авто. ⚡ = скилл. Цель — 20 этаж.</p>
           <div class="rogue-meta" id="rogueMetaPanel"></div>
           <button class="btn-primary" id="rogueStartBtn">⚔️ В путь</button>
           <button class="btn-secondary" id="rogueOpenMetaBtn" style="width:100%; margin-top:8px;">🌟 Мета-прокачка</button>
@@ -511,26 +521,21 @@
         <div class="rogue-menu hidden" id="rogueMenuDead">
           <h2 id="rogueDeadTitle">💀 Гибель</h2>
           <div id="rogueDeadStats"></div>
-          <p style="font-size:12px; opacity:0.8; margin: 8px 0;">
-            За забег копятся <b>Осколки душ</b> для постоянной прокачки.
-          </p>
           <button class="btn-primary" id="rogueRestartBtn">🔁 Снова</button>
           <button class="btn-secondary" id="rogueDeadMetaBtn" style="width:100%; margin-top:8px;">🌟 Мета-прокачка</button>
         </div>
         <div class="rogue-menu hidden" id="rogueMenuMeta">
           <h2>🌟 Мета-прокачка</h2>
-          <p>Тратишь Осколки душ — улучшения остаются с тобой навсегда.</p>
+          <p>Осколки душ — постоянные улучшения.</p>
           <div id="rogueMetaList"></div>
           <button class="btn-secondary" id="rogueMetaClose" style="width:100%; margin-top:8px;">Назад</button>
         </div>
       </div>
-      <!-- HUD-кнопка скилла поверх арены -->
       <button class="rogue-skill-btn" id="rogueSkillBtn">
         <span class="ico" id="rogueSkillIco">⚡</span>
         <span class="cd" id="rogueSkillCd"></span>
       </button>
     </div>
-
     <div class="rogue-controls">
       <div class="rogue-stick" id="rogueStick">
         <div class="rogue-stick-knob" id="rogueStickKnob"></div>
@@ -556,10 +561,6 @@
     <div class="g2048-board" id="g2048Board"></div>
     <div id="g2048Result" style="text-align:center; margin: 12px 0; min-height:24px;"></div>
     <button class="btn-primary" id="g2048Restart">🔁 Новая игра</button>
-    <div class="upg-info" style="margin-top: 14px;">
-      💡 Свайпай по полю или используй стрелки. Сливай одинаковые числа, цель — собрать 2048.
-      В ТГ-приложении лучше сворачивать-разворачивать по тапу — иначе свайпы могут конфликтовать.
-    </div>
   </div>
 </div>
 
@@ -581,36 +582,30 @@
       <div class="snake-overlay" id="snakeOverlay">
         <div class="snake-overlay-inner">
           <h2 id="snakeOverTitle">🐍 Змейка</h2>
-          <p id="snakeOverText">Выбери режим и нажми старт. Управление — стрелки, свайпы или кнопки.</p>
-
+          <p id="snakeOverText">Выбери режим и нажми старт.</p>
           <div class="snake-modes" id="snakeModes">
             <button class="snake-mode active" data-mode="classic">
-              <div class="m-ico">🟩</div>
-              <div class="m-name">Classic</div>
-              <div class="m-desc">Стандартная. Стены = смерть.</div>
+              <div class="m-ico">🟩</div><div class="m-name">Classic</div>
+              <div class="m-desc">Стандарт</div>
             </button>
             <button class="snake-mode" data-mode="nowall">
-              <div class="m-ico">🌀</div>
-              <div class="m-name">No Walls</div>
-              <div class="m-desc">Стены телепортируют на другую сторону.</div>
+              <div class="m-ico">🌀</div><div class="m-name">No Walls</div>
+              <div class="m-desc">Телепорт</div>
             </button>
             <button class="snake-mode" data-mode="speed">
-              <div class="m-ico">⚡</div>
-              <div class="m-name">Speed</div>
-              <div class="m-desc">Быстро + ускорение от еды. Ставка x2.</div>
+              <div class="m-ico">⚡</div><div class="m-name">Speed</div>
+              <div class="m-desc">Быстро x2</div>
             </button>
             <button class="snake-mode" data-mode="maze">
-              <div class="m-ico">🧱</div>
-              <div class="m-name">Maze</div>
-              <div class="m-desc">Стены внутри арены. Бонусные яблоки.</div>
+              <div class="m-ico">🧱</div><div class="m-name">Maze</div>
+              <div class="m-desc">Стены + бонусы</div>
             </button>
           </div>
-
           <button class="btn-primary" id="snakeStart">▶️ Старт</button>
-          <div class="snake-best-line">🏆 Рекорд режима: <b id="snakeBestMode">0</b></div>
+          <div class="snake-best-line">🏆 Рекорд: <b id="snakeBestMode">0</b></div>
         </div>
       </div>
-      <button class="snake-pause-btn" id="snakePauseBtn" title="Пауза">⏸</button>
+      <button class="snake-pause-btn" id="snakePauseBtn">⏸</button>
     </div>
     <div class="snake-pad">
       <button class="snake-key" data-snake-dir="up">▲</button>
@@ -624,6 +619,6 @@
 <!-- toast -->
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

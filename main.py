@@ -1,7 +1,7 @@
 """
-GameBuddy — Telegram-бот, с которым можно скоротать время.
-Игры: крестики-нолики (с непобедимым ИИ), КНБ, угадай число, виселица,
-викторина, кубик/монетка + Web App «Поймай звезду».
+GameBuddy — Telegram-бот с мини-играми и Web App казино.
+Игры: крестики-нолики, КНБ, угадай число, виселица,
+викторина, города, загадки + Web App Casino с магазином подарков.
 """
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ import os
 import random
 from pathlib import Path
 from typing import Any
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -34,9 +40,13 @@ from aiohttp import web
 from games import ai_chat, cities, fun, hangman, quiz, tictactoe
 
 # ---------- конфиг ----------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8836940145:AAH_KRNe1Umuzuqf11prikrgcx7-VKIYtHE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # ID админа для уведомлений о покупках
 WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # подставится во время запуска
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is required! Set it in .env or environment.")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,14 +149,13 @@ async def start_cmd(msg: Message, state: FSMContext) -> None:
     await state.clear()
     await msg.answer(
         f"<b>Привет, {msg.from_user.first_name}!</b> 👋\n\n"
-        "Я <b>GameBuddy</b> — твой компаньон по убиванию времени.\n\n"
-        "🎰 <b>«Открыть Казино»</b> — целый Web App: слоты, рулетка, "
-        "crash, mines, кейсы x1/x5/x10, контракты улучшения, инвентарь, "
-        "кликер с прокачкой и виртуальная валюта <b>GameCoins</b>.\n\n"
-        "🎮 <b>«Игры»</b> — мини-игры в чате (крестики-нолики, виселица, "
-        "города, загадки, викторина).\n\n"
-        "🤖 <b>«Поболтать»</b> — могу просто поболтать с тобой на любую тему.\n\n"
-        "Ещё есть кнопки: 😂 шутка, 💡 факт, 🌒 страшилка, 🎲 случайное.\n\n"
+        "Я <b>GameBuddy</b> — твой компаньон для развлечений.\n\n"
+        "🎁 <b>«Открыть Казино»</b> — Web App: слоты, рулетка, crash, "
+        "mines, кейсы, магазин подарков, лидерборд и кликер.\n\n"
+        "🛍 <b>Магазин</b> — обменивай виртуальные монеты на реальные "
+        "подарки для Telegram (мишки, сердечки, звёзды)!\n\n"
+        "🎮 <b>«Игры»</b> — мини-игры в чате.\n"
+        "🤖 <b>«Поболтать»</b> — AI чат на любые темы.\n\n"
         "Команды: /games /quiz /chat /city /joke /fact /riddle /story /help",
         reply_markup=main_menu(PUBLIC_URL),
     )
@@ -402,7 +411,7 @@ def _quiz_score_line(chat_id: int) -> str:
 async def ask_quiz(message: Message) -> None:
     chat_id = message.chat.id
     cat = QUIZ_CATEGORY.get(chat_id, "any")
-    q = quiz.random_question(cat)
+    q = quiz.random_question(cat, chat_id)
     QUIZ_CURRENT[chat_id] = q
     cat_label = quiz.CATEGORIES.get(cat, "🎲 Случайные")
     await message.answer(
@@ -715,6 +724,44 @@ async def webapp_data(msg: Message) -> None:
         await msg.answer(f"Данные из WebApp: <code>{msg.web_app_data.data}</code>")
         return
 
+    # ========== SHOP PURCHASE ==========
+    if data.get("action") == "shop_purchase":
+        item_name = data.get("item_name", "Подарок")
+        item_ico = data.get("item_ico", "🎁")
+        item_id = data.get("item_id", "unknown")
+        price = data.get("price", 0)
+
+        user = msg.from_user
+        username = f"@{user.username}" if user.username else f"id:{user.id}"
+        user_link = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+
+        # Подтверждение пользователю
+        await msg.answer(
+            f"🎁 <b>Покупка подтверждена!</b>\n\n"
+            f"{item_ico} <b>{item_name}</b>\n"
+            f"💰 Списано: <b>{price:,}</b> GameCoins\n\n"
+            f"Мы скоро свяжемся с тобой для отправки подарка! 🚀"
+        )
+
+        # Уведомление админу
+        if ADMIN_ID:
+            admin_msg = (
+                f"🛒 <b>НОВАЯ ПОКУПКА!</b>\n\n"
+                f"👤 Покупатель: {user_link} ({username})\n"
+                f"🆔 User ID: <code>{user.id}</code>\n"
+                f"{item_ico} Товар: <b>{item_name}</b> (id: {item_id})\n"
+                f"💰 Цена: <b>{price:,}</b> GameCoins\n"
+                f"⏰ Время: сейчас\n\n"
+                f"Нужно отправить подарок!"
+            )
+            try:
+                await msg.bot.send_message(ADMIN_ID, admin_msg)
+                log.info("Admin notified about purchase from user %s: %s", user.id, item_id)
+            except Exception as e:
+                log.error("Failed to notify admin: %s", e)
+
+        return
+
     # legacy: catch_star
     if data.get("game") == "catch_star":
         score = data.get("score", 0)
@@ -726,7 +773,7 @@ async def webapp_data(msg: Message) -> None:
         await msg.answer(f"⭐ Твой результат: <b>{score}</b>\n{comment}")
         return
 
-    # любой другой payload — просто игнорируем (раньше big_win сюда сыпался)
+    # любой другой payload — игнорируем
     return
 
 

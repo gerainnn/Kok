@@ -1,6 +1,6 @@
 /* ============================================================
-   GameBuddy Casino — игровой движок (v2: проигрышное казино,
-   кейсы x1/x5/x10, инвентарь со стеком, контракт, in-app big win)
+   GameBuddy Casino — игровой движок (v3: магазин подарков,
+   лидерборд, кейсы, аркада, улучшенный визуал)
    ============================================================ */
 (() => {
 "use strict";
@@ -164,8 +164,10 @@ $$(".nav-item").forEach(btn => {
     $$(".nav-item").forEach(b => b.classList.toggle("active", b === btn));
     $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === target));
     haptic("light");
-    if (target === "profile") renderProfile();
+    if (target === "profile") { renderProfile(); renderArcadeRecords(); }
     if (target === "cases") renderCases();
+    if (target === "shop") renderShop();
+    if (target === "leaders") renderLeaderboard();
   });
 });
 
@@ -3408,14 +3410,182 @@ function renderArcadeRecords() {
   `;
 }
 
-// расширяем nav handler, чтобы рендерить рекорды
-const _origNavHandler = null;
-$$(".nav-item").forEach(btn => {
-  btn.addEventListener("click", () => {
-    if (btn.dataset.nav === "arcade") renderArcadeRecords();
+// расширяем nav handler — рекорды рендерятся из основного обработчика
+renderArcadeRecords();
+
+// ============================================================
+// 🎁 МАГАЗИН ПОДАРКОВ — покупка реальных TG-подарков за виртуальные монеты
+// ============================================================
+const SHOP_ITEMS = [
+  { id: "teddy_bear", name: "Мишка", ico: "🧸", price: 50000, desc: "Милый плюшевый мишка для Telegram" },
+  { id: "heart", name: "Сердечко", ico: "❤️", price: 25000, desc: "Красное сердце — признание в симпатии" },
+  { id: "star", name: "Звёздочка", ico: "⭐", price: 15000, desc: "Яркая звезда для твоего друга" },
+  { id: "cake", name: "Тортик", ico: "🎂", price: 30000, desc: "Праздничный торт в подарок" },
+  { id: "rose", name: "Роза", ico: "🌹", price: 20000, desc: "Элегантная красная роза" },
+  { id: "diamond", name: "Бриллиант", ico: "💎", price: 100000, desc: "Роскошный бриллиант — VIP подарок", premium: true },
+  { id: "rocket", name: "Ракета", ico: "🚀", price: 75000, desc: "Отправь ракету в космос", premium: true },
+  { id: "crown", name: "Корона", ico: "👑", price: 150000, desc: "Корона настоящего чемпиона", premium: true },
+];
+
+let shopSelectedItem = null;
+
+function renderShop() {
+  const grid = $("#shopGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  for (const item of SHOP_ITEMS) {
+    const el = document.createElement("div");
+    el.className = "shop-item" + (item.premium ? " premium" : "");
+    el.innerHTML = `
+      <div class="gift-ico">${item.ico}</div>
+      <div class="gift-name">${item.name}</div>
+      <div class="gift-price">${fmt(item.price)} 🪙</div>
+      <div class="gift-desc">${item.desc}</div>
+    `;
+    el.addEventListener("click", () => openShopConfirm(item));
+    grid.appendChild(el);
+  }
+}
+
+function openShopConfirm(item) {
+  shopSelectedItem = item;
+  $("#smIco").textContent = item.ico;
+  $("#smTitle").textContent = `Купить ${item.name}?`;
+  $("#smDesc").textContent = item.desc;
+  $("#smPrice").textContent = `${fmt(item.price)} 🪙`;
+  $("#shopModal").classList.add("open");
+  haptic("light");
+}
+
+$("#smCancel").addEventListener("click", () => {
+  $("#shopModal").classList.remove("open");
+  shopSelectedItem = null;
+});
+
+$("#smBuy").addEventListener("click", () => {
+  if (!shopSelectedItem) return;
+  const item = shopSelectedItem;
+  if (state.balance < item.price) {
+    toast("Не хватает монет!", "lose");
+    $("#shopModal").classList.remove("open");
+    return;
+  }
+  adjustBalance(-item.price);
+
+  // отправляем данные боту через WebApp.sendData
+  const purchaseData = {
+    action: "shop_purchase",
+    item_id: item.id,
+    item_name: item.name,
+    item_ico: item.ico,
+    price: item.price,
+    user_balance_after: state.balance,
+  };
+  try {
+    if (tg?.sendData) {
+      tg.sendData(JSON.stringify(purchaseData));
+    }
+  } catch (e) { console.warn("sendData failed", e); }
+
+  // записываем в историю покупок
+  if (!state.purchases) state.purchases = [];
+  state.purchases.push({ ...purchaseData, ts: Date.now() });
+  save();
+
+  $("#shopModal").classList.remove("open");
+  shopSelectedItem = null;
+  confettiBurst(60);
+  toast(`${item.ico} ${item.name} куплен! Мы свяжемся с тобой.`, "win");
+  haptic("win");
+  renderShop();
+});
+
+// init shop
+renderShop();
+
+// ============================================================
+// 🏆 ЛИДЕРБОРД — локальная симуляция + отправка score на сервер
+// ============================================================
+let lbCategory = "balance";
+
+// для локальной симуляции (пока без сервера) создаём фейковых игроков + текущего
+function generateLeaderboard(category) {
+  const user = tg?.initDataUnsafe?.user;
+  const myName = user?.first_name || user?.username || "Ты";
+  
+  // фейковые имена
+  const fakeNames = [
+    "Alex", "Мария", "Дмитрий", "Кристина", "Артём", "Настя",
+    "Иван", "Виктория", "Максим", "Екатерина", "Данил", "Ольга",
+    "Никита", "Анна", "Влад", "София", "Тимур", "Дарья", "Егор", "Лиза"
+  ];
+  
+  let myValue = 0;
+  if (category === "balance") myValue = state.balance;
+  else if (category === "wagered") myValue = state.stats.totalWagered;
+  else if (category === "wins") myValue = state.stats.wins;
+  else if (category === "cases") myValue = state.stats.casesOpened;
+
+  // генерируем фейковых игроков (seed от category чтобы были стабильные)
+  const seed = category.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+  const players = [];
+  for (let i = 0; i < 15; i++) {
+    const rng = Math.sin(seed * (i + 1) * 9301 + 49297) % 233280;
+    const r = Math.abs(rng / 233280);
+    let val;
+    if (category === "balance") val = Math.floor(500 + r * 200000);
+    else if (category === "wagered") val = Math.floor(1000 + r * 500000);
+    else if (category === "wins") val = Math.floor(5 + r * 300);
+    else val = Math.floor(2 + r * 150);
+    players.push({ name: fakeNames[i % fakeNames.length], value: val, isMe: false });
+  }
+  
+  players.push({ name: myName, value: myValue, isMe: true });
+  players.sort((a, b) => b.value - a.value);
+  return players.slice(0, 20);
+}
+
+function renderLeaderboard() {
+  const list = $("#lbList");
+  if (!list) return;
+  
+  const players = generateLeaderboard(lbCategory);
+  list.innerHTML = "";
+  
+  const labels = { balance: "🪙", wagered: "🎰", wins: "🏅", cases: "📦" };
+  
+  players.forEach((p, i) => {
+    const rank = i + 1;
+    const row = document.createElement("div");
+    let cls = "lb-row";
+    if (rank === 1) cls += " top-1";
+    else if (rank === 2) cls += " top-2";
+    else if (rank === 3) cls += " top-3";
+    if (p.isMe) cls += " me";
+    row.className = cls;
+    
+    const rankEmoji = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : rank;
+    row.innerHTML = `
+      <div class="lb-rank">${rankEmoji}</div>
+      <div class="lb-info">
+        <div class="lb-name">${p.name}${p.isMe ? " (ты)" : ""}</div>
+        <div class="lb-sub">#${rank} в рейтинге</div>
+      </div>
+      <div class="lb-value">${fmt(p.value)} ${labels[lbCategory]}</div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+// lb tabs
+$$(".lb-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    $$(".lb-tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    lbCategory = tab.dataset.lb;
+    renderLeaderboard();
+    haptic("light");
   });
 });
-// первый рендер
-renderArcadeRecords();
 
 })();
