@@ -14,10 +14,12 @@ POST /api/quiz/answer       — записать ответ + апдейт ст�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import secrets
+import time
 from typing import Any, Optional
 
 from aiohttp import web
@@ -250,7 +252,7 @@ async def shop_buy(request: web.Request) -> web.Response:
     # уведомляем админа в фоне
     notifier = request.app.get("admin_notify")
     if notifier:
-        request.app.loop.create_task(
+        asyncio.create_task(
             notifier(order=res["order"], user=request["user"])
         )
 
@@ -408,10 +410,46 @@ async def quiz_reset(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# ---------- middleware: логируем все /api запросы ----------
+@web.middleware
+async def api_logging_middleware(request: web.Request, handler) -> web.Response:
+    """Логирует каждый API-запрос: метод, путь, статус, время ответа."""
+    if not request.path.startswith("/api"):
+        return await handler(request)
+
+    start = time.monotonic()
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        elapsed = (time.monotonic() - start) * 1000
+        log.warning(
+            "API %s %s → %d (%.0fms) [http_exception]",
+            request.method, request.path, exc.status, elapsed,
+        )
+        raise
+    except Exception as exc:
+        elapsed = (time.monotonic() - start) * 1000
+        log.error(
+            "API %s %s → 500 (%.0fms) [unhandled: %s]",
+            request.method, request.path, elapsed, exc,
+        )
+        raise
+
+    elapsed = (time.monotonic() - start) * 1000
+    level = logging.WARNING if response.status >= 400 else logging.INFO
+    log.log(
+        level,
+        "API %s %s → %d (%.0fms)",
+        request.method, request.path, response.status, elapsed,
+    )
+    return response
+
+
 # ---------- регистрация ----------
 def setup(app: web.Application, *, bot_token: str, admin_notify) -> None:
     app["bot_token"] = bot_token
     app["admin_notify"] = admin_notify
+    app.middlewares.append(api_logging_middleware)
     app.router.add_get("/api/me", me)
     app.router.add_post("/api/daily", daily)
     app.router.add_post("/api/bet", bet)

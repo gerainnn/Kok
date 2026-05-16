@@ -135,21 +135,21 @@ function showBigWin(amount, gameTitle, opts = {}) {
 // Локально (вне TG) — фолбек в localStorage.
 const API = window.GameBuddyAPI;
 // SERVER = "мы можем дёргать API". Пере-проверяется первым ответом /api/me.
-// Это let, а не const: нужно различать «мы вне TG» и «TG есть, но сервер лёг».
+// Начальное значение: true если API доступно И мы в TG.
+// Но даже если isTelegram=false, мы пробуем /api/me при старте — вдруг ALLOW_UNSIGNED=1
+// или initData появится при следующем открытии.
 let SERVER = !!(API && API.isTelegram);
-// SERVER_OK = последний живой ответ сервера. Лидерборд/магазин показывают
-// сообщение об оффлайн-режиме, ориентируясь на эту переменную.
+// SERVER_OK = последний живой ответ сервера. Лидерборд/магазин ориентируются на неё.
 let SERVER_OK = SERVER;
 // Запомним, было ли в ходе сессии хоть раз 401 — чтобы корректно подсказать.
 let SERVER_AUTH_FAILED = false;
 
 function _markServerError(r) {
-  // r — это ответ http() из api.js. Помечает причину последней ошибки сервера.
   if (!r) return;
   if (r.status === 401) { SERVER_AUTH_FAILED = true; SERVER_OK = false; return; }
   if (r.error === "network" || r.status === 0 || r.status >= 500) { SERVER_OK = false; return; }
 }
-function _markServerOk() { SERVER_OK = true; }
+function _markServerOk() { SERVER_OK = true; SERVER = true; }
 
 let _serverSyncQueue = Promise.resolve();
 function _enqueue(fn) { _serverSyncQueue = _serverSyncQueue.then(fn).catch(()=>{}); return _serverSyncQueue; }
@@ -3444,11 +3444,13 @@ renderArcadeRecords();
 // 🌐 Серверная синхронизация: профиль, баланс, кейсы (через API.bet/case_open)
 // ============================================================
 async function syncFromServer() {
-  if (!SERVER) return;
+  // Пробуем даже если SERVER=false (например, isTelegram не определился при загрузке,
+  // но сервер может разрешить unsigned login). Если API вообще не загрузился — выходим.
+  if (!API) return;
   try {
     const r = await API.me();
     if (r.ok) {
-      _markServerOk();
+      _markServerOk();  // это устанавливает SERVER=true и SERVER_OK=true
       const u = r.data.user;
       state.balance = u.balance;
       window._serverUser = u;
@@ -3465,10 +3467,14 @@ async function syncFromServer() {
       save();
     } else {
       _markServerError(r);
-      // Без видимой ошибки баланс «висит» из localStorage и игрок не понимает,
-      // почему монеты не сохраняются.
       if (r.status === 401) {
-        toast("Не удалось авторизоваться. Открой казино заново через кнопку у бота.", "lose", 3500);
+        // Ретрай через 2 сек — иногда Telegram SDK инициализирует initData чуть позже
+        if (!syncFromServer._retried) {
+          syncFromServer._retried = true;
+          setTimeout(() => syncFromServer(), 2000);
+          return;
+        }
+        toast("Не удалось авторизоваться. Открой казино заново через кнопку у бота.", "lose", 4000);
       } else if (r.error === "network" || r.status === 0) {
         toast("Сервер недоступен. Прогресс не сохраняется.", "lose", 3500);
       } else if (r.status >= 500) {
@@ -3507,7 +3513,13 @@ let _pendingGift = null;
 async function renderShop() {
   const grid = $("#shopGrid");
   if (!SERVER) {
-    grid.innerHTML = `<div class="shop-loading">Магазин доступен только внутри Telegram.</div>`;
+    // Если SERVER ещё не стал true — возможно syncFromServer ещё не завершился.
+    // Показываем кнопку ретрая вместо мёртвой заглушки.
+    grid.innerHTML = `<div class="shop-loading">
+      Магазин недоступен.<br>
+      <span style="font-size:12px; opacity:0.7;">Открой казино через кнопку у бота в Telegram.</span><br>
+      <button class="btn-secondary" style="margin-top:10px;" onclick="syncFromServer().then(()=>renderShop())">🔄 Попробовать снова</button>
+    </div>`;
     return;
   }
   if (!_shopCatalog) {
@@ -3623,7 +3635,11 @@ $$(".lb-tab").forEach(t => t.addEventListener("click", () => {
 async function renderLeaderboard() {
   const list = $("#lbList");
   if (!SERVER) {
-    list.innerHTML = `<div class="lb-loading">Лидерборд доступен только в Telegram.</div>`;
+    list.innerHTML = `<div class="lb-loading">
+      Лидерборд недоступен.<br>
+      <span style="font-size:12px; opacity:0.7;">Открой казино через кнопку у бота в Telegram.</span><br>
+      <button class="btn-secondary" style="margin-top:10px;" onclick="syncFromServer().then(()=>renderLeaderboard())">🔄 Попробовать снова</button>
+    </div>`;
     return;
   }
   list.innerHTML = `<div class="lb-loading">Загружаю...</div>`;
