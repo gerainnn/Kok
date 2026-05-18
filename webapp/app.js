@@ -135,9 +135,7 @@ function showBigWin(amount, gameTitle, opts = {}) {
 // Локально (вне TG) — фолбек в localStorage.
 const API = window.GameBuddyAPI;
 // SERVER = "мы можем дёргать API". Пере-проверяется первым ответом /api/me.
-// Начальное значение: true если API доступно И мы в TG.
-// Но даже если isTelegram=false, мы пробуем /api/me при старте — вдруг ALLOW_UNSIGNED=1
-// или initData появится при следующем открытии.
+// Начальное значение: true если API доступно И мы в TG (isTelegram — геттер, проверяет каждый раз).
 let SERVER = !!(API && API.isTelegram);
 // SERVER_OK = последний живой ответ сервера. Лидерборд/магазин ориентируются на неё.
 let SERVER_OK = SERVER;
@@ -3447,43 +3445,72 @@ async function syncFromServer() {
   // Пробуем даже если SERVER=false (например, isTelegram не определился при загрузке,
   // но сервер может разрешить unsigned login). Если API вообще не загрузился — выходим.
   if (!API) return;
-  try {
-    const r = await API.me();
-    if (r.ok) {
-      _markServerOk();  // это устанавливает SERVER=true и SERVER_OK=true
-      const u = r.data.user;
-      state.balance = u.balance;
-      window._serverUser = u;
-      window._streakBest = u.stats?.streak_best || 0;
-      // мерджим в локальные stats для отображения
-      state.stats.spins        = u.stats?.spins        ?? state.stats.spins;
-      state.stats.totalWagered = u.stats?.total_wagered?? state.stats.totalWagered;
-      state.stats.totalWon     = u.stats?.total_won    ?? state.stats.totalWon;
-      state.stats.biggestWin   = u.stats?.biggest_win  ?? state.stats.biggestWin;
-      state.stats.wins         = u.stats?.wins         ?? state.stats.wins;
-      state.stats.losses       = u.stats?.losses       ?? state.stats.losses;
-      refreshBalance();
-      renderHome();
-      save();
-    } else {
+
+  // Ждём готовности Telegram SDK перед первым запросом (макс 3 сек).
+  // Некоторые клиенты Telegram инициализируют initData с задержкой.
+  if (!syncFromServer._sdkWaited) {
+    syncFromServer._sdkWaited = true;
+    await API.waitForSdk(3000);
+    // После ожидания обновляем флаг SERVER (isTelegram — геттер, мог стать true)
+    if (API.isTelegram) SERVER = true;
+  }
+
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [1500, 3000, 5000]; // задержки между попытками
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const r = await API.me();
+      if (r.ok) {
+        _markServerOk();  // это устанавливает SERVER=true и SERVER_OK=true
+        const u = r.data.user;
+        state.balance = u.balance;
+        window._serverUser = u;
+        window._streakBest = u.stats?.streak_best || 0;
+        // мерджим в локальные stats для отображения
+        state.stats.spins        = u.stats?.spins        ?? state.stats.spins;
+        state.stats.totalWagered = u.stats?.total_wagered?? state.stats.totalWagered;
+        state.stats.totalWon     = u.stats?.total_won    ?? state.stats.totalWon;
+        state.stats.biggestWin   = u.stats?.biggest_win  ?? state.stats.biggestWin;
+        state.stats.wins         = u.stats?.wins         ?? state.stats.wins;
+        state.stats.losses       = u.stats?.losses       ?? state.stats.losses;
+        refreshBalance();
+        renderHome();
+        save();
+        return; // успех — выходим
+      }
+
       _markServerError(r);
+
       if (r.status === 401) {
-        // Ретрай через 2 сек — иногда Telegram SDK инициализирует initData чуть позже
-        if (!syncFromServer._retried) {
-          syncFromServer._retried = true;
-          setTimeout(() => syncFromServer(), 2000);
-          return;
+        // 401 — SDK мог ещё не инициализироваться или initData устарел.
+        // Пробуем ещё раз с задержкой (initData обновляется при каждом вызове API).
+        if (attempt < MAX_RETRIES) {
+          console.warn(`[syncFromServer] 401 на попытке ${attempt + 1}, ретрай через ${RETRY_DELAYS[attempt]}мс...`);
+          await new Promise(res => setTimeout(res, RETRY_DELAYS[attempt]));
+          continue;
         }
+        // Все попытки исчерпаны
         toast("Не удалось авторизоваться. Открой казино заново через кнопку у бота.", "lose", 4000);
-      } else if (r.error === "network" || r.status === 0) {
+        return;
+      }
+
+      // Другие ошибки — не ретраим (сеть, 500)
+      if (r.error === "network" || r.status === 0) {
         toast("Сервер недоступен. Прогресс не сохраняется.", "lose", 3500);
       } else if (r.status >= 500) {
         toast("Ошибка на сервере. Попробуй позже.", "lose", 3500);
       }
+      return;
+    } catch (e) {
+      SERVER_OK = false;
+      if (attempt < MAX_RETRIES) {
+        await new Promise(res => setTimeout(res, RETRY_DELAYS[attempt]));
+        continue;
+      }
+      toast("Сеть недоступна. Прогресс не сохраняется.", "lose", 3500);
+      return;
     }
-  } catch (e) {
-    SERVER_OK = false;
-    toast("Сеть недоступна. Прогресс не сохраняется.", "lose", 3500);
   }
 }
 
