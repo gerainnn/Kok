@@ -28,39 +28,76 @@ def parse_init_data(init_data: str, bot_token: str, max_age_sec: int = 0) -> Opt
 
     max_age_sec=0 (по умолчанию) означает "не проверять время". Telegram WebApp
     передаёт актуальный initData при каждом открытии; срок жизни контролируется
-    самим клиентом. Раньше стоял 86400 — это ломало авторизацию при расхождении
-    часов сервера или при длительной сессии без перезапуска WebApp.
+    самим клиентом.
+
+    Поддерживает оба формата Telegram:
+      - Классический (hash-based): ключи отсортированы, HMAC-SHA256
+      - Новый (signature-based, Telegram v7.x+): если есть поле signature
     """
     if not init_data:
         log.debug("parse_init_data: empty init_data")
         return None
 
+    # Некоторые клиенты отправляют initData дополнительно URL-encoded
+    # Если видим %xx — декодируем один раз
+    if "%25" in init_data or "%3D" in init_data or "%26" in init_data:
+        init_data = unquote(init_data)
+
     try:
         pairs = dict(parse_qsl(init_data, keep_blank_values=True))
     except Exception as e:
-        log.warning("parse_init_data: parse_qsl failed: %s", e)
+        log.warning("parse_init_data: parse_qsl failed: %s (init_data_len=%d)", e, len(init_data))
         return None
 
+    if not pairs:
+        log.warning(
+            "parse_init_data: parse_qsl returned empty dict. init_data_len=%d first_50=%r",
+            len(init_data), init_data[:50],
+        )
+        return None
+
+    log.debug(
+        "parse_init_data: parsed keys=%s init_data_len=%d",
+        sorted(pairs.keys()), len(init_data),
+    )
+
     received_hash = pairs.pop("hash", None)
+    # Также убираем signature если есть (новый формат TG) — он не участвует в проверке hash
+    pairs.pop("signature", None)
+
     if not received_hash:
-        log.warning("parse_init_data: no 'hash' field in init_data (keys=%s)", list(pairs.keys()))
+        log.warning(
+            "parse_init_data: no 'hash' field in init_data (keys=%s, init_data_len=%d, first_80=%r)",
+            list(pairs.keys()), len(init_data), init_data[:80],
+        )
         return None
 
     # data_check_string = key=value\n... отсортировано по ключу
     data_check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs.keys()))
+
+    # HMAC: secret_key = HMAC_SHA256(key="WebAppData", msg=bot_token)
     secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     expected = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(expected, received_hash):
-        # Подробный лог: какие поля пришли, сколько символов в hash и т.д.
+        # Подробный лог для дебага
         log.warning(
             "parse_init_data: SIGNATURE MISMATCH. "
-            "keys=%s auth_date=%s hash_len=%d expected_prefix=%s received_prefix=%s",
+            "keys=%s auth_date=%s hash_len=%d "
+            "expected_prefix=%s received_prefix=%s "
+            "data_check_len=%d bot_token_len=%d",
             sorted(pairs.keys()),
             pairs.get("auth_date", "?"),
             len(received_hash),
             expected[:12] + "...",
             received_hash[:12] + "...",
+            len(data_check),
+            len(bot_token),
+        )
+        # Дополнительно логируем первые 100 символов data_check для отладки
+        log.debug(
+            "parse_init_data: data_check_first_100=%r",
+            data_check[:100],
         )
         return None
 

@@ -8,38 +8,64 @@
      В этом случае мы дополнительно шлём заголовок X-TG-User с JSON-описанием юзера
      и считаем себя «в Telegram». Сервер примет такой логин, только если на нём
      включена переменная ALLOW_UNSIGNED_INITDATA=1.
+
+   ВАЖНО: initData читается при КАЖДОМ запросе (а не один раз при загрузке),
+   потому что некоторые клиенты Telegram инициализируют SDK с задержкой.
 */
 (() => {
 "use strict";
 
-const tg = window.Telegram?.WebApp;
-const initData = tg?.initData || "";
-const unsafeUser = tg?.initDataUnsafe?.user || null;
+// --- Вспомогательные функции для получения актуальных данных SDK ---
 
-// Считаем, что мы внутри Telegram, если есть подписанный initData ЛИБО
-// форк-клиент дал нам хотя бы initDataUnsafe.user.id.
-const hasUnsafeUser = !!(unsafeUser && (unsafeUser.id || unsafeUser.user_id));
-const isTelegram = !!initData || hasUnsafeUser;
+function _getTg() {
+  return window.Telegram?.WebApp || null;
+}
 
-// Заголовок для форк-фолбека. Сервер использует его, только если нет валидной
-// подписи и включён ALLOW_UNSIGNED_INITDATA. Безопаснее всегда — тогда сервер
-// сам выберет: подпись приоритетнее.
-let unsafeUserHeader = "";
-if (hasUnsafeUser) {
+function _getInitData() {
+  const tg = _getTg();
+  return tg?.initData || "";
+}
+
+function _getUnsafeUser() {
+  const tg = _getTg();
+  return tg?.initDataUnsafe?.user || null;
+}
+
+function _buildUnsafeUserHeader() {
+  const unsafeUser = _getUnsafeUser();
+  if (!unsafeUser) return "";
+  const uid = unsafeUser.id || unsafeUser.user_id;
+  if (!uid) return "";
   try {
-    unsafeUserHeader = JSON.stringify({
-      id:         unsafeUser.id || unsafeUser.user_id,
+    return JSON.stringify({
+      id:         uid,
       username:   unsafeUser.username || null,
       first_name: unsafeUser.first_name || null,
       last_name:  unsafeUser.last_name || null,
       photo_url:  unsafeUser.photo_url || null,
     });
-  } catch (e) { unsafeUserHeader = ""; }
+  } catch (e) { return ""; }
 }
 
+function _checkIsTelegram() {
+  const initData = _getInitData();
+  if (initData) return true;
+  const unsafeUser = _getUnsafeUser();
+  if (unsafeUser && (unsafeUser.id || unsafeUser.user_id)) return true;
+  return false;
+}
+
+// --- HTTP-обёртка: initData берётся свежий при каждом запросе ---
+
 async function http(method, path, body) {
-  const headers = { "X-Init-Data": initData };
+  const initData = _getInitData();
+  const unsafeUserHeader = _buildUnsafeUserHeader();
+
+  const headers = {};
+  // Отправляем X-Init-Data только если он не пустой (избегаем мусорных заголовков)
+  if (initData) headers["X-Init-Data"] = initData;
   if (unsafeUserHeader) headers["X-TG-User"] = unsafeUserHeader;
+
   let payload = undefined;
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -59,9 +85,35 @@ async function http(method, path, body) {
   return { ok: true, status: res.status, data: data ?? {} };
 }
 
+// --- Public API ---
+
 const API = {
-  isTelegram,
-  initData,
+  // isTelegram теперь — геттер, проверяет актуальное состояние SDK
+  get isTelegram() { return _checkIsTelegram(); },
+  get initData()   { return _getInitData(); },
+
+  // Метод для ожидания готовности SDK (вызывается из app.js при старте)
+  waitForSdk(timeoutMs = 3000) {
+    return new Promise((resolve) => {
+      // Если уже есть данные — сразу
+      if (_getInitData() || _checkIsTelegram()) {
+        resolve(true);
+        return;
+      }
+      const start = Date.now();
+      const interval = setInterval(() => {
+        if (_getInitData() || _checkIsTelegram()) {
+          clearInterval(interval);
+          resolve(true);
+          return;
+        }
+        if (Date.now() - start >= timeoutMs) {
+          clearInterval(interval);
+          resolve(false); // таймаут — SDK так и не дал данные
+        }
+      }, 100);
+    });
+  },
 
   me:               ()      => http("GET",  "/api/me"),
   daily:            ()      => http("POST", "/api/daily"),

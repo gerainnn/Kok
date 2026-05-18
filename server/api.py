@@ -66,6 +66,12 @@ async def _auth(request: web.Request) -> Optional[dict]:
             user_tg = parsed["user"]
         else:
             fail_reason = "bad_signature_or_user"
+            # Детальный лог: что именно пришло, чтобы можно было отладить
+            log.info(
+                "auth: init_data present but validation failed. "
+                "init_data_len=%d init_data_first_80=%r",
+                len(init_data), init_data[:80],
+            )
 
     # Фолбек для форк-клиентов: подписи нет/битая, но фронт прислал user из
     # initDataUnsafe в заголовке X-TG-User. Включается переменной окружения.
@@ -73,7 +79,7 @@ async def _auth(request: web.Request) -> Optional[dict]:
         raw = request.headers.get("X-TG-User") or ""
         user_tg = parse_unsigned_user(raw)
         if user_tg is not None:
-            log.warning(
+            log.info(
                 "auth: unsigned fallback used for user_id=%s (%s)",
                 user_tg.get("id"), user_tg.get("username") or user_tg.get("first_name"),
             )
@@ -81,12 +87,15 @@ async def _auth(request: web.Request) -> Optional[dict]:
             fail_reason = "unsigned_user_invalid"
 
     if user_tg is None:
-        # Один лог на каждый 401 — это поможет понять, что ломается у юзера.
+        # Подробный лог на каждый 401 — поможет понять, что ломается у юзера.
         log.warning(
-            "auth: 401 path=%s reason=%s has_init=%s has_xtguser=%s allow_unsigned=%s",
+            "auth: 401 path=%s reason=%s has_init=%s init_len=%d "
+            "has_xtguser=%s allow_unsigned=%s user_agent=%s",
             request.rel_url, fail_reason,
-            bool(init_data), bool(request.headers.get("X-TG-User")),
+            bool(init_data), len(init_data) if init_data else 0,
+            bool(request.headers.get("X-TG-User")),
             ALLOW_UNSIGNED,
+            (request.headers.get("User-Agent") or "")[:80],
         )
         return None
 
